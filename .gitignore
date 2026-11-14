@@ -31,3 +31,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+/.idea/.gitignore
+/.idea/gateway.iml
+/.idea/go.imports.xml
+/.idea/modules.xml
+/.idea/vcs.xml
+/.claude/settings.local.json
