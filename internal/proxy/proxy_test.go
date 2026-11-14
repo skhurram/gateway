@@ -38,7 +38,7 @@ func TestProxyForwardsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK || string(body) != "world" {
@@ -65,7 +65,7 @@ func TestProxySetsForwardedFor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if xff := got.Get("X-Forwarded-For"); xff != "127.0.0.1" {
 		t.Errorf("X-Forwarded-For = %q, want 127.0.0.1", xff)
@@ -84,7 +84,7 @@ func TestProxyUpstreamDownReturns502(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
@@ -115,7 +115,7 @@ func TestGracefulShutdownDrainsInFlight(t *testing.T) {
 			resCh <- result{err: err}
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b, err := io.ReadAll(resp.Body)
 		resCh <- result{body: string(b), err: err}
 	}()
@@ -130,8 +130,8 @@ func TestGracefulShutdownDrainsInFlight(t *testing.T) {
 	}()
 
 	select {
-	case <-shutdownDone:
-		t.Fatal("Shutdown returned while a request was still in flight")
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned early (err=%v) while a request was still in flight", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
