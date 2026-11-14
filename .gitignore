@@ -37,3 +37,6 @@ go.work.sum
 /.idea/modules.xml
 /.idea/vcs.xml
 /.claude/settings.local.json
+
+# Build output
+/bin/
