@@ -4,7 +4,8 @@ A small API gateway and reverse proxy written in Go, deployed to Kubernetes with
 
 I built it to practice production-grade Go, Kubernetes platform tooling, and infrastructure as code in one project that I can run end to end.
 
-> **Status:** in progress. See [Roadmap](#roadmap) for what works today.
+> **Status:** `v0.4.0` implementation is complete. The local demo is verified;
+> GitHub release notes and the paid cloud demo remain pending.
 
 ## Features
 
@@ -32,7 +33,6 @@ flowchart LR
     CB1 --> U1[upstream A]
     CB2 --> U2[upstream B]
     HC[health checker] -.-> LB
-    CB[circuit breaker] -.-> LB
     CTRL[Route controller] -.->|config| GW
     GW -.->|OTLP| OTEL[OpenTelemetry collector]
     U1 -.->|OTLP| OTEL
@@ -160,8 +160,8 @@ gateway with:
   flips `/readyz` to `503` and drains in-flight requests for up to 30s.
   `terminationGracePeriodSeconds` is `5 + 30 + 10 = 45`.
 
-Chart checks run in CI (`helm lint` and `helm template`), as does building both
-images. Locally: `make helm-check`.
+Chart checks run in CI (`helm lint` and `helm template`), as does building all
+three images. Locally: `make helm-check`.
 
 ```bash
 helm install gateway deploy/helm/gateway \
@@ -220,8 +220,8 @@ reload rather than a rollout.
 ## Terraform
 
 The Helm release is reusable through [terraform/modules/gateway](terraform/modules/gateway).
-For a local kind cluster, build and load the three images with `make cluster
-images`, then use:
+For a fresh local kind cluster, build and load the three images with
+`make cluster images`, then use:
 
 ```bash
 cd terraform/environments/local
@@ -233,7 +233,10 @@ curl http://localhost:8080/api/users/hello
 
 The local environment applies the demo upstreams and observability manifests,
 then installs the gateway chart and controller. Its kubeconfig path and kind
-context can be overridden with Terraform variables.
+context can be overridden with Terraform variables. Use one installation
+method per cluster: resources already created by `make up` are not imported
+into Terraform state, so applying Terraform over that installation will try to
+create conflicting resources.
 
 The paid demo in [terraform/environments/demo](terraform/environments/demo)
 creates a one-node Exoscale SKS cluster and installs the same Helm chart. Set
@@ -328,7 +331,9 @@ The rate limiter is visible the same way. A burst against `/api/orders`
 (limit 200 rps, burst 400) returned 2392 `200` and 2530 `429`, and
 `gateway_ratelimited_total` summed over the pods was 1299 + 1231 = 2530.
 
-*Screenshots are not included; the outputs above come from the live cluster.*
+*Screenshots are not included; the output tables come from a live cluster.
+The most important visual for tracing is the Jaeger request trace, and the
+Prometheus endpoint provides the metric evidence.*
 
 ## Testing and benchmarks
 
