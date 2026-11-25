@@ -29,3 +29,23 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.15.0
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/gateway --kube-version 1.31.0
+      - name: Render with default values
+        run: helm template gateway deploy/helm/gateway --kube-version 1.31.0 > /dev/null
+      - name: Render with the kind demo values
+        run: helm template gateway deploy/helm/gateway --kube-version 1.31.0 -f deploy/kind/gateway-values.yaml > /dev/null
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build gateway image
+        run: docker build -t edge-gateway:ci .
+      - name: Build echo image
+        run: docker build --build-arg CMD=echo -t edge-gateway-echo:ci .

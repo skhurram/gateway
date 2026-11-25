@@ -25,10 +25,7 @@ type Checker struct {
 // Run probes all upstreams until ctx is cancelled, then waits for every
 // probe goroutine to exit before returning.
 func (c *Checker) Run(ctx context.Context) {
-	client := c.Client
-	if client == nil {
-		client = &http.Client{Timeout: c.Timeout}
-	}
+	client := c.httpClient()
 
 	var wg sync.WaitGroup
 	for _, u := range c.Upstreams {
@@ -39,6 +36,30 @@ func (c *Checker) Run(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+}
+
+// CheckOnce probes every upstream concurrently and returns when all probes
+// finish. Call it before serving so readiness reflects real upstream state
+// instead of the optimistic initial value.
+func (c *Checker) CheckOnce(ctx context.Context) {
+	client := c.httpClient()
+
+	var wg sync.WaitGroup
+	for _, u := range c.Upstreams {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.probe(ctx, client, u)
+		}()
+	}
+	wg.Wait()
+}
+
+func (c *Checker) httpClient() *http.Client {
+	if c.Client != nil {
+		return c.Client
+	}
+	return &http.Client{Timeout: c.Timeout}
 }
 
 func (c *Checker) loop(ctx context.Context, client *http.Client, u *balancer.Upstream) {

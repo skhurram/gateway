@@ -1,0 +1,11 @@
+.git
+.github
+.devcontainer
+.DS_Store
+bin
+plan
+docs
+terraform
+deploy
+controller
+*.md

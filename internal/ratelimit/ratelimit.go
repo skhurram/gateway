@@ -93,14 +93,34 @@ func (l *Limiter) sweep(t time.Time) {
 	}
 }
 
+// Option configures Middleware.
+type Option func(*middlewareConfig)
+
+type middlewareConfig struct {
+	onLimited func(*http.Request)
+}
+
+// WithOnLimited registers a callback invoked for every rejected request, for
+// metrics.
+func WithOnLimited(f func(*http.Request)) Option {
+	return func(c *middlewareConfig) { c.onLimited = f }
+}
+
 // Middleware rejects requests over the limit with 429 and a Retry-After
 // header. Clients are identified by the connection's remote IP; forwarded
 // headers are ignored because clients can set them freely.
-func Middleware(l *Limiter) func(http.Handler) http.Handler {
+func Middleware(l *Limiter, opts ...Option) func(http.Handler) http.Handler {
+	var cfg middlewareConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ok, retry := l.Allow(clientIP(r))
 			if !ok {
+				if cfg.onLimited != nil {
+					cfg.onLimited(r)
+				}
 				secs := max(int(math.Ceil(retry.Seconds())), 1)
 				w.Header().Set("Retry-After", strconv.Itoa(secs))
 				http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)

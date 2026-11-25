@@ -1,0 +1,31 @@
+# Helm values for the local kind demo. Applied on top of the chart defaults.
+image:
+  repository: edge-gateway
+  tag: dev
+  # The image is loaded into the cluster with `kind load`, never pulled.
+  pullPolicy: Never
+
+service:
+  type: NodePort
+  nodePort: 30080 # mapped to localhost:8080 by kind-config.yaml
+
+otel:
+  endpoint: http://otel-collector:4318
+
+config:
+  listen: ":8080"
+  health:
+    path: /health
+    interval: 2s
+    timeout: 1s
+  routes:
+    - prefix: /api/users
+      upstreams:
+        - http://echo-users:8080
+    - prefix: /api/orders
+      upstreams:
+        - http://echo-orders:8080
+      # Demo of rate limiting: curl this route in a loop to see 429s.
+      rate_limit:
+        requests_per_second: 200
+        burst: 400

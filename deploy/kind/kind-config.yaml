@@ -1,0 +1,11 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: edge-gateway
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Gateway Service (NodePort 30080) -> http://localhost:8080
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

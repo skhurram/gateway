@@ -111,6 +111,22 @@ func TestUnreachableUpstreamIsUnhealthy(t *testing.T) {
 	eventually(t, "unreachable upstream marked unhealthy", func() bool { return !up.Healthy() })
 }
 
+func TestCheckOnceUpdatesStatusBeforeReturning(t *testing.T) {
+	var aUp, bUp atomic.Bool
+	aUp.Store(true)
+	a, b := fakeUpstream(t, &aUp), fakeUpstream(t, &bUp) // b answers 503
+
+	c := &health.Checker{Upstreams: []*balancer.Upstream{a, b}, Path: "/health", Timeout: time.Second}
+	c.CheckOnce(context.Background())
+
+	if !a.Healthy() {
+		t.Error("a should be healthy")
+	}
+	if b.Healthy() {
+		t.Error("b should be unhealthy immediately after CheckOnce")
+	}
+}
+
 func TestRunStopsOnContextCancel(t *testing.T) {
 	var ok atomic.Bool
 	ok.Store(true)

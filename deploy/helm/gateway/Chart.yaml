@@ -1,0 +1,7 @@
+apiVersion: v2
+name: gateway
+description: Edge gateway, a Go reverse proxy with routing, load balancing, health checks and rate limiting.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+kubeVersion: ">=1.30.0-0"

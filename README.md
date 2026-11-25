@@ -16,8 +16,8 @@ I built it to practice production-grade Go, Kubernetes platform tooling, and inf
 | Token-bucket rate limiting (per client IP) | done |
 | Circuit breaker | planned |
 | Hot config reload | planned |
-| OpenTelemetry traces and metrics | planned |
-| Helm chart (probes, autoscaler, disruption budget) | planned |
+| OpenTelemetry traces and metrics | done |
+| Helm chart (probes, autoscaler, disruption budget) | done |
 | `Route` custom resource and controller | planned |
 | Terraform cluster module | planned |
 
@@ -31,21 +31,34 @@ flowchart LR
     LB --> U2[upstream B]
     HC[health checker] -.-> LB
     CTRL[Route controller] -.->|config| GW
-    GW -.-> OTEL[OpenTelemetry collector]
+    GW -.->|OTLP| OTEL[OpenTelemetry collector]
+    U1 -.->|OTLP| OTEL
+    U2 -.->|OTLP| OTEL
+    OTEL -->|traces| J[Jaeger]
+    OTEL -->|metrics| P[Prometheus endpoint]
 ```
 
-*Replace this with a final diagram once the controller and telemetry exist.*
+*The `Route` controller is not built yet (v0.3).*
 
 ## Quick start
 
-Requirements: Go (version in `go.mod`).
+Requirements: Go (version in `go.mod`). For the cluster demo also Docker,
+[kind](https://kind.sigs.k8s.io/), kubectl and Helm. The chart needs
+Kubernetes 1.30 or newer (native `preStop` sleep).
 
 ```bash
 make test      # unit tests with the race detector
 make run       # run the gateway on :8080 (single upstream via flags)
+make up        # kind cluster + images + gateway, demo upstreams, Jaeger, collector
+make down      # delete the kind cluster
 ```
 
-`make up` and `make down` (kind cluster and Helm deploy) arrive in v0.2.
+After `make up`:
+
+```bash
+curl localhost:8080/api/users/hello    # served by echo-users via the gateway
+curl localhost:8080/api/orders/hello   # served by echo-orders
+```
 
 To run the binary against a config file:
 
@@ -92,12 +105,47 @@ health:            # optional, these are the defaults
 Short notes on the choices that matter, each with the alternatives I considered.
 
 - [001: Why a token bucket for rate limiting](docs/decisions/001-rate-limiting.md)
-- 002: Health checks, active versus passive (planned)
+- [002: Health checks, active versus passive](docs/decisions/002-health-checks.md)
 - 003: Controller versus config file (planned)
 
 ## Kubernetes
 
-*Describe the Helm chart: probes, autoscaling, disruption budget, and how the `Route` resource is reconciled.*
+The Helm chart in [deploy/helm/gateway](deploy/helm/gateway) deploys the
+gateway with:
+
+- **Probes.** Liveness hits `/healthz` (the process is alive). Readiness hits
+  `/readyz`, which is `200` only while at least one upstream is healthy and the
+  pod is not shutting down. Liveness deliberately ignores upstream health, so a
+  backend outage does not restart the gateway. See
+  [decision 002](docs/decisions/002-health-checks.md).
+- **Config.** The gateway config lives in a ConfigMap (`values.yaml`, key
+  `config`). A checksum annotation rolls the pods when it changes.
+- **Hardening.** Non-root user, read-only root filesystem, all capabilities
+  dropped, `RuntimeDefault` seccomp, no service account token. The image is
+  distroless and multi-stage built (`docker build .`): **31 MB**, runs as
+  uid 65532.
+- **Availability.** A CPU-based HorizontalPodAutoscaler (2 to 5 replicas), a
+  PodDisruptionBudget (`minAvailable: 1`), pods spread across nodes, and a
+  rolling update with `maxUnavailable: 0` and `maxSurge: 1`.
+- **Graceful termination.** On pod deletion the kubelet runs a `preStop` sleep
+  (5s) while the endpoint removal propagates, then sends `SIGTERM`. The gateway
+  flips `/readyz` to `503` and drains in-flight requests for up to 30s.
+  `terminationGracePeriodSeconds` is `5 + 30 + 10 = 45`.
+
+Chart checks run in CI (`helm lint` and `helm template`), as does building both
+images. Locally: `make helm-check`.
+
+```bash
+helm install gateway deploy/helm/gateway \
+  --set 'config.routes[0].prefix=/' \
+  --set 'config.routes[0].upstreams[0]=http://my-service:8080'
+```
+
+`make up` uses [deploy/kind/gateway-values.yaml](deploy/kind/gateway-values.yaml)
+to route `/api/users` and `/api/orders` to two demo echo services, and installs
+metrics-server so the autoscaler has data.
+
+*How the `Route` resource is reconciled arrives with the controller in v0.3.*
 
 ## Terraform
 
@@ -105,7 +153,82 @@ Short notes on the choices that matter, each with the alternatives I considered.
 
 ## Observability
 
-*Show an example trace and the metrics the gateway exposes.*
+The gateway and the demo echo services export traces and metrics over OTLP/HTTP
+to an OpenTelemetry Collector (set `otel.endpoint` in the chart, or
+`OTEL_EXPORTER_OTLP_ENDPOINT` for the binary). Without an endpoint,
+instrumentation is a no-op. The collector sends traces to Jaeger and exposes
+metrics in Prometheus format. `make up` deploys all three
+([deploy/observability.yaml](deploy/observability.yaml)).
+
+### Traces
+
+The gateway wraps its handler with `otelhttp` and wraps the upstream transport
+with `otelhttp.NewTransport`, so W3C `traceparent` reaches the upstream. One
+request produces one trace across both services:
+
+```bash
+kubectl -n edge port-forward svc/jaeger 16686:16686   # then open http://localhost:16686
+curl localhost:8080/api/users/hello                   # the response includes "trace_id"
+```
+
+The trace for that request, as returned by the Jaeger API:
+
+```text
+gateway      GET                 (server span, route /api/users)
+└─ gateway   HTTP GET            (client span to the upstream)
+   └─ echo-users   GET /         (server span in the upstream)
+```
+
+All three spans share one trace ID, which is also the `trace_id` echoed in the
+JSON response body.
+
+### Metrics
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `gateway_requests_total` | `http_route`, `http_response_status_code` | Requests handled |
+| `gateway_request_duration_seconds` | same | Latency histogram |
+| `gateway_ratelimited_total` | `http_route` | Requests rejected with 429 |
+| `gateway_upstreams_healthy` | `http_route` | Upstreams in rotation |
+
+Requests that match no route are recorded under `http_route="unmatched"`.
+`gateway_upstreams_healthy` counts the upstream URLs of a route that are in
+rotation. In the kind demo each route has one upstream (a Service), so it is
+`1` or `0` per pod. Each pod reports its own series (label `instance`), so sum
+across pods. Metrics export every 10s (`otel.metricExportIntervalMs`, an
+integer in milliseconds as the OpenTelemetry spec requires).
+
+```bash
+kubectl -n edge port-forward svc/otel-collector 8889:8889
+curl -s localhost:8889/metrics | grep '^gateway_'
+```
+
+### Killing an upstream
+
+Load of 50 requests/s on `/api/users`, then `kubectl scale deploy/echo-users
+--replicas=0`, then back to 2. Values are summed over the 2 gateway pods from
+the collector's `/metrics`; counters are cumulative since the pods started.
+
+| Time | `gateway_upstreams_healthy` (`/api/users`) | Requests | 5xx |
+|---|---|---|---|
+| 14s, baseline | 2 | 3355 | 1156 |
+| 26s, upstream down | **0** | 4206 | 1600 |
+| 36s, upstream down | **0** | 4706 | 2100 |
+| 50s, scaled back up | 2 | 5206 | 2420 |
+| 62s, recovered | 2 | 5806 | 2420 |
+
+The baseline 5xx came from an earlier outage test on the same pods. What
+matters is the change: while the upstream is down the gauge is `0` and 5xx
+grows by about 500 per 10s (the whole load), and once it recovers the gauge is
+back to `2` and 5xx stops growing. The load generator saw 2187 `200`, 22 `502`
+(requests that raced the health check) and 1242 `503`. `/readyz` stayed `200`
+throughout, because the `/api/orders` upstream was still healthy.
+
+The rate limiter is visible the same way. A burst against `/api/orders`
+(limit 200 rps, burst 400) returned 2392 `200` and 2530 `429`, and
+`gateway_ratelimited_total` summed over the pods was 1299 + 1231 = 2530.
+
+*Screenshots are not included; the outputs above come from the live cluster.*
 
 ## Testing and benchmarks
 
@@ -119,10 +242,28 @@ Short notes on the choices that matter, each with the alternatives I considered.
 Measured on an Intel i7-4770HQ (8 threads), macOS, Go 1.27. The benchmark
 calls the handler directly, so it excludes the client-to-gateway network hop.
 
+### Zero-downtime rollout
+
+`make rollout-test` sends steady load through the gateway while it does a
+rolling restart, and fails on any non-200 response or transport error. It uses
+[hey](https://github.com/rakyll/hey) and the kind cluster from `make up`.
+
+| | |
+|---|---|
+| Load | 10 workers x 10 qps for 60s against `/api/users/...` via `localhost:8080` |
+| Event | `kubectl rollout restart deployment/gateway` 5s in (2 replicas, `maxUnavailable: 0`) |
+| Result | **5,993 requests, all `200`, 0 errors** |
+| Latency | p50 5.4 ms, p99 65.8 ms, max 270 ms |
+
+The settings that make this work are the readiness probe, the `preStop` sleep,
+the drain-on-`SIGTERM` behavior and the grace period; see
+[Kubernetes](#kubernetes). It is one run on a single-node kind cluster on a
+laptop, so treat it as evidence the mechanism works, not as a capacity claim.
+
 ## Roadmap
 
 - [x] v0.1: proxy, routing, round-robin, health checks, rate limiting
-- [ ] v0.2: Helm chart, OpenTelemetry, kind demo
+- [x] v0.2: Helm chart, OpenTelemetry, kind demo
 - [ ] v0.3: `Route` controller
 - [ ] v0.4: Terraform module, circuit breaker, hot reload
 

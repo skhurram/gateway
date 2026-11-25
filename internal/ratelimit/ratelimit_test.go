@@ -117,6 +117,18 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
+func TestOnLimitedCallback(t *testing.T) {
+	l := ratelimit.New(1, 1, newClock().Now)
+	limited := 0
+	h := ratelimit.Middleware(l, ratelimit.WithOnLimited(func(*http.Request) { limited++ }))(http.NotFoundHandler())
+	for range 3 {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	}
+	if limited != 2 {
+		t.Errorf("onLimited called %d times, want 2", limited)
+	}
+}
+
 func TestRetryAfterIsAtLeastOneSecond(t *testing.T) {
 	l := ratelimit.New(100, 1, newClock().Now) // next token in 10ms
 	h := ratelimit.Middleware(l)(http.NotFoundHandler())
