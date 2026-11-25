@@ -260,7 +260,8 @@ with `otelhttp.NewTransport`, so W3C `traceparent` reaches the upstream. One
 request produces one trace across both services:
 
 ```bash
-kubectl -n edge port-forward svc/jaeger 16686:16686   # then open http://localhost:16686
+kubectl -n edge port-forward svc/jaeger 16686:16686
+# Open localhost:16686, or use VS Code's Ports tab in Codespaces.
 curl localhost:8080/api/users/hello                   # the response includes "trace_id"
 ```
 
@@ -296,6 +297,11 @@ integer in milliseconds as the OpenTelemetry spec requires).
 kubectl -n edge port-forward svc/otel-collector 8889:8889
 curl -s localhost:8889/metrics | grep '^gateway_'
 ```
+
+In GitHub Codespaces, open the forwarded ports from the VS Code **Ports** tab.
+Codespaces serves them as
+`https://<codespace-name>-<port>.app.github.dev`; use the same GitHub browser
+session if the generated URL is private.
 
 ### Killing an upstream
 
@@ -376,7 +382,8 @@ laptop, so treat it as evidence the mechanism works, not as a capacity claim.
 - [x] v0.1: proxy, routing, round-robin, health checks, rate limiting
 - [x] v0.2: Helm chart, OpenTelemetry, kind demo
 - [x] v0.3: `Route` controller and atomic hot reload
-- [ ] v0.4: Terraform module and circuit breaker (implementation complete; release pending)
+- [x] v0.4: Terraform modules and circuit breaker (`v0.4.0` tag; GitHub
+  release notes and paid cloud demo pending)
 
 ## License
 
