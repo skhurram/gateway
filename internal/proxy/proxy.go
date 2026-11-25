@@ -59,10 +59,10 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(r.In.Context().Value(upstreamKey{}).(*url.URL))
+			r.SetURL(r.In.Context().Value(upstreamKey{}).(*balancer.Upstream).URL)
 			r.SetXForwarded()
 		},
-		Transport: rt,
+		Transport: breakerTransport{next: rt},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		},
@@ -73,8 +73,27 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
-		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, u.URL)))
+		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, u)))
 	})
+}
+
+type breakerTransport struct {
+	next http.RoundTripper
+}
+
+func (t breakerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	u := r.Context().Value(upstreamKey{}).(*balancer.Upstream)
+	resp, err := t.next.RoundTrip(r)
+	if err != nil {
+		u.RecordFailure()
+		return nil, err
+	}
+	if resp.StatusCode >= http.StatusInternalServerError {
+		u.RecordFailure()
+	} else {
+		u.RecordSuccess()
+	}
+	return resp, nil
 }
 
 // NewServer returns an http.Server with timeouts set.

@@ -57,6 +57,50 @@ jobs:
       - name: Render with the kind demo values
         run: helm template gateway deploy/helm/gateway --kube-version 1.31.0 -f deploy/kind/gateway-values.yaml > /dev/null
 
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Check formatting
+        run: terraform fmt -check -recursive terraform
+      - name: Initialize gateway module
+        working-directory: terraform/modules/gateway
+        run: terraform init -backend=false
+      - name: Validate gateway module
+        working-directory: terraform/modules/gateway
+        run: terraform validate
+      - name: Test gateway module
+        working-directory: terraform/modules/gateway
+        run: terraform test
+      - name: Initialize local environment
+        working-directory: terraform/environments/local
+        run: terraform init -backend=false
+      - name: Validate local environment
+        working-directory: terraform/environments/local
+        run: terraform validate
+      - name: Initialize Exoscale cluster module
+        working-directory: terraform/modules/exoscale-cluster
+        run: terraform init -backend=false
+      - name: Validate Exoscale cluster module
+        working-directory: terraform/modules/exoscale-cluster
+        run: terraform validate
+      - name: Test Exoscale cluster module
+        working-directory: terraform/modules/exoscale-cluster
+        run: terraform test
+      - name: Initialize demo environment
+        working-directory: terraform/environments/demo
+        run: terraform init -backend=false
+      - name: Validate demo environment
+        working-directory: terraform/environments/demo
+        run: terraform validate
+      - name: Lint Terraform
+        uses: terraform-linters/setup-tflint@v4
+      - run: tflint --chdir terraform/modules/gateway
+      - run: tflint --chdir terraform/modules/exoscale-cluster
+      - run: tflint --chdir terraform/environments/local
+      - run: tflint --chdir terraform/environments/demo
+
   image:
     runs-on: ubuntu-latest
     steps:

@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"gateway/internal/balancer"
+	"gateway/internal/breaker"
 	"gateway/internal/config"
 	"gateway/internal/ratelimit"
 )
@@ -37,12 +39,18 @@ type RouterOption func(*routerConfig)
 
 type routerConfig struct {
 	meterProvider metric.MeterProvider
+	breakerNow    func() time.Time
 }
 
 // WithMeterProvider sets where request metrics are recorded. The default is
 // the global OpenTelemetry meter provider.
 func WithMeterProvider(mp metric.MeterProvider) RouterOption {
 	return func(c *routerConfig) { c.meterProvider = mp }
+}
+
+// WithBreakerClock injects the clock used by all upstream circuit breakers.
+func WithBreakerClock(now func() time.Time) RouterOption {
+	return func(c *routerConfig) { c.breakerNow = now }
 }
 
 // NewRouter builds a router from cfg. Each route gets a round-robin balancer
@@ -61,6 +69,7 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper, opts ...RouterOption) (
 	}
 
 	r := &Router{metrics: m}
+	breakerCfg := cfg.EffectiveCircuitBreaker()
 	for _, rcfg := range cfg.Routes {
 		prefix := config.NormalizePrefix(rcfg.Prefix)
 		ups := make([]*balancer.Upstream, 0, len(rcfg.Upstreams))
@@ -69,7 +78,17 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper, opts ...RouterOption) (
 			if err != nil {
 				return nil, fmt.Errorf("route %q: %w", prefix, err)
 			}
-			ups = append(ups, balancer.NewUpstream(u))
+			up := balancer.NewUpstream(u)
+			cb, err := breaker.New(breaker.Config{
+				FailureThreshold: breakerCfg.FailureThreshold,
+				OpenTimeout:      breakerCfg.OpenTimeout,
+				HalfOpenRequests: breakerCfg.HalfOpenRequests,
+			}, rc.breakerNow)
+			if err != nil {
+				return nil, fmt.Errorf("route %q: create circuit breaker: %w", prefix, err)
+			}
+			up.SetBreaker(cb)
+			ups = append(ups, up)
 		}
 		h := NewBalanced(balancer.NewRoundRobin(ups), rt)
 		if rl := rcfg.RateLimit; rl != nil {
@@ -101,13 +120,28 @@ func (r *Router) ObserveHealthy(o metric.Int64Observer) {
 	}
 }
 
+// ObserveBreakerStates records one gauge point for each upstream's current
+// passive circuit breaker state.
+func (r *Router) ObserveBreakerStates(o metric.Int64Observer) {
+	for _, rte := range r.routes {
+		for _, u := range rte.upstreams {
+			state := u.BreakerState()
+			o.Observe(1, metric.WithAttributes(
+				attribute.String(routeAttr, rte.prefix),
+				attribute.String(upstreamAttr, u.URL.String()),
+				attribute.String(stateAttr, string(state)),
+			))
+		}
+	}
+}
+
 // Upstreams returns every upstream across all routes, for health checking.
 func (r *Router) Upstreams() []*balancer.Upstream { return r.upstreams }
 
 // Ready reports whether at least one upstream is healthy.
 func (r *Router) Ready() bool {
 	for _, u := range r.upstreams {
-		if u.Healthy() {
+		if u.Healthy() && u.BreakerState() != breaker.Open {
 			return true
 		}
 	}

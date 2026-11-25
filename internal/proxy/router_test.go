@@ -1,11 +1,14 @@
 package proxy_test
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gateway/internal/config"
 	"gateway/internal/proxy"
@@ -153,3 +156,120 @@ func TestRouterRateLimitsPerRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestRouterBreakerStopsTrafficThenProbesRecovery(t *testing.T) {
+	var status atomic.Int64
+	status.Store(http.StatusServiceUnavailable)
+	var requests atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(int(status.Load()))
+	}))
+	defer upstream.Close()
+
+	now := time.Unix(1_700_000_000, 0)
+	cfg := &config.Config{
+		CircuitBreaker: config.CircuitBreaker{
+			FailureThreshold: 1,
+			OpenTimeout:      time.Minute,
+			HalfOpenRequests: 1,
+		},
+		Routes: []config.Route{{Prefix: "/", Upstreams: []string{upstream.URL}}},
+	}
+	r, err := proxy.NewRouter(cfg, nil, proxy.WithBreakerClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _ := get(t, r, "/"); code != http.StatusServiceUnavailable {
+		t.Fatalf("first failure status = %d, want 503", code)
+	}
+	if code, _ := get(t, r, "/"); code != http.StatusServiceUnavailable {
+		t.Fatalf("open circuit status = %d, want 503", code)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("upstream saw %d requests while open, want 1", got)
+	}
+
+	now = now.Add(time.Minute)
+	status.Store(http.StatusOK)
+	if code, _ := get(t, r, "/"); code != http.StatusOK {
+		t.Fatalf("trial status = %d, want 200", code)
+	}
+	if code, _ := get(t, r, "/"); code != http.StatusOK {
+		t.Fatalf("post-recovery status = %d, want 200", code)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("upstream saw %d requests after recovery, want 3", got)
+	}
+}
+
+func TestRouterBreakerDoesNotCountClientErrors(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		CircuitBreaker: config.CircuitBreaker{
+			FailureThreshold: 1,
+			OpenTimeout:      time.Minute,
+			HalfOpenRequests: 1,
+		},
+		Routes: []config.Route{{Prefix: "/", Upstreams: []string{upstream.URL}}},
+	}
+	r, err := proxy.NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if code, _ := get(t, r, "/"); code != http.StatusBadRequest {
+			t.Fatalf("4xx response opened breaker: %d", code)
+		}
+	}
+}
+
+type errorTransport struct {
+	err   error
+	calls atomic.Int64
+}
+
+func (t *errorTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls.Add(1)
+	return nil, t.err
+}
+
+func TestRouterBreakerCountsTransportErrors(t *testing.T) {
+	for _, err := range []error{errors.New("connection refused"), contextDeadlineExceeded{}} {
+		t.Run(err.Error(), func(t *testing.T) {
+			rt := &errorTransport{err: err}
+			cfg := &config.Config{
+				CircuitBreaker: config.CircuitBreaker{
+					FailureThreshold: 1,
+					OpenTimeout:      time.Minute,
+					HalfOpenRequests: 1,
+				},
+				Routes: []config.Route{{Prefix: "/", Upstreams: []string{"http://unreachable.invalid"}}},
+			}
+			r, err := proxy.NewRouter(cfg, rt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code, _ := get(t, r, "/"); code != http.StatusBadGateway {
+				t.Fatalf("transport error status = %d, want 502", code)
+			}
+			if code, _ := get(t, r, "/"); code != http.StatusServiceUnavailable {
+				t.Fatalf("open circuit status = %d, want 503", code)
+			}
+			if got := rt.calls.Load(); got != 1 {
+				t.Errorf("transport calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+type contextDeadlineExceeded struct{}
+
+func (contextDeadlineExceeded) Error() string   { return "context deadline exceeded" }
+func (contextDeadlineExceeded) Timeout() bool   { return true }
+func (contextDeadlineExceeded) Temporary() bool { return true }

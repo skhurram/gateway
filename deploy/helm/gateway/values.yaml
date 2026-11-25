@@ -33,6 +33,10 @@ config:
     path: /health
     interval: 5s
     timeout: 2s
+  circuit_breaker:
+    failure_threshold: 5
+    open_timeout: 30s
+    half_open_requests: 1
   routes:
     # Placeholder. Point this at real services, for example:
     #   - prefix: /api/users

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -135,6 +136,41 @@ func TestHealthyUpstreamGauge(t *testing.T) {
 	r.Upstreams()[1].SetHealthy(false)
 	if got := healthy(); got != 0 {
 		t.Errorf("after both down, healthy = %d, want 0", got)
+	}
+}
+
+func TestBreakerStateGauge(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		CircuitBreaker: config.CircuitBreaker{
+			FailureThreshold: 1,
+			OpenTimeout:      time.Minute,
+			HalfOpenRequests: 1,
+		},
+		Routes: []config.Route{{Prefix: "/", Upstreams: []string{upstream.URL}}},
+	}
+	r, err := proxy.NewRouter(cfg, nil, proxy.WithMeterProvider(mp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proxy.RegisterBreakerStateGaugeWithProvider(mp, func() *proxy.Router { return r }); err != nil {
+		t.Fatal(err)
+	}
+	get(t, r, "/")
+
+	g, ok := collect(t, reader)["gateway.upstreams.breaker"].Data.(metricdata.Gauge[int64])
+	if !ok || len(g.DataPoints) != 1 {
+		t.Fatalf("gauge = %+v", g)
+	}
+	state, ok := g.DataPoints[0].Attributes.Value("circuit_breaker.state")
+	if !ok || state.AsString() != "open" || g.DataPoints[0].Value != 1 {
+		t.Errorf("breaker gauge = %+v", g.DataPoints[0])
 	}
 }
 

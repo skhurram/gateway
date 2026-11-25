@@ -6,8 +6,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"gateway/internal/balancer"
+	"gateway/internal/breaker"
 )
 
 func pool(t *testing.T, n int) []*balancer.Upstream {
@@ -113,5 +115,30 @@ func TestRoundRobinNoHealthy(t *testing.T) {
 	}
 	if _, err := balancer.NewRoundRobin(nil).Next(); !errors.Is(err, balancer.ErrNoHealthyUpstream) {
 		t.Errorf("empty pool err = %v, want ErrNoHealthyUpstream", err)
+	}
+}
+
+func TestRoundRobinSkipsOpenBreaker(t *testing.T) {
+	ups := pool(t, 2)
+	cb, err := breaker.New(breaker.Config{
+		FailureThreshold: 1,
+		OpenTimeout:      time.Minute,
+		HalfOpenRequests: 1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ups[0].SetBreaker(cb)
+	cb.Failure()
+
+	rr := balancer.NewRoundRobin(ups)
+	for range 5 {
+		u, err := rr.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u != ups[1] {
+			t.Fatalf("selected %v with an open circuit", u.URL)
+		}
 	}
 }

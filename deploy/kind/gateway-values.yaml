@@ -24,6 +24,10 @@ config:
     path: /health
     interval: 2s
     timeout: 1s
+  circuit_breaker:
+    failure_threshold: 5
+    open_timeout: 10s
+    half_open_requests: 1
   routes:
     - prefix: /api/users
       upstreams:

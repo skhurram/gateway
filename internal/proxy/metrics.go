@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	routeAttr  = "http.route"
-	statusAttr = "http.response.status_code"
+	routeAttr    = "http.route"
+	statusAttr   = "http.response.status_code"
+	upstreamAttr = "upstream"
+	stateAttr    = "circuit_breaker.state"
 
 	unmatchedRoute = "unmatched"
 )
@@ -84,6 +86,28 @@ func RegisterHealthyUpstreamGaugeWithProvider(mp metric.MeterProvider, current f
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
 			if r := current(); r != nil {
 				r.ObserveHealthy(o)
+			}
+			return nil
+		}))
+	return err
+}
+
+// RegisterBreakerStateGauge registers the gateway-wide breaker-state gauge
+// once. current must read the active router across config reloads.
+func RegisterBreakerStateGauge(current func() *Router) error {
+	return RegisterBreakerStateGaugeWithProvider(otel.GetMeterProvider(), current)
+}
+
+// RegisterBreakerStateGaugeWithProvider is RegisterBreakerStateGauge with an
+// explicit meter provider for tests and alternate exporters.
+func RegisterBreakerStateGaugeWithProvider(mp metric.MeterProvider, current func() *Router) error {
+	meter := mp.Meter("gateway/proxy")
+	_, err := meter.Int64ObservableGauge("gateway.upstreams.breaker",
+		metric.WithDescription("Upstream circuit breaker state, by route and upstream."),
+		metric.WithUnit("{upstream}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			if r := current(); r != nil {
+				r.ObserveBreakerStates(o)
 			}
 			return nil
 		}))

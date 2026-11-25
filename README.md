@@ -14,12 +14,12 @@ I built it to practice production-grade Go, Kubernetes platform tooling, and inf
 | Round-robin load balancing | done |
 | Active health checks | done |
 | Token-bucket rate limiting (per client IP) | done |
-| Circuit breaker | planned |
+| Circuit breaker | done |
 | Atomic hot config reload | done |
 | OpenTelemetry traces and metrics | done |
 | Helm chart (probes, autoscaler, disruption budget) | done |
 | `Route` custom resource and controller | done |
-| Terraform cluster module | planned |
+| Terraform local and Exoscale modules | done |
 
 ## Architecture
 
@@ -27,9 +27,12 @@ I built it to practice production-grade Go, Kubernetes platform tooling, and inf
 flowchart LR
     Client --> GW[edge-gateway]
     GW -->|route match| LB[balancer]
-    LB --> U1[upstream A]
-    LB --> U2[upstream B]
+    LB --> CB1[breaker A]
+    LB --> CB2[breaker B]
+    CB1 --> U1[upstream A]
+    CB2 --> U2[upstream B]
     HC[health checker] -.-> LB
+    CB[circuit breaker] -.-> LB
     CTRL[Route controller] -.->|config| GW
     GW -.->|OTLP| OTEL[OpenTelemetry collector]
     U1 -.->|OTLP| OTEL
@@ -93,6 +96,10 @@ health:            # optional, these are the defaults
   path: /health
   interval: 5s
   timeout: 2s
+circuit_breaker:   # optional, these are the defaults
+  failure_threshold: 5
+  open_timeout: 30s
+  half_open_requests: 1
 ```
 
 - The longest matching prefix wins, on path-segment boundaries: `/api` matches
@@ -102,6 +109,9 @@ health:            # optional, these are the defaults
 - Upstreams are served round-robin. One that fails its health check (non-2xx
   or unreachable) leaves the rotation until it passes again. With none
   healthy the gateway returns `503`.
+- Connection errors, timeouts, and 5xx responses open an upstream's circuit
+  after the configured consecutive failure threshold. Open circuits are
+  skipped; after the timeout, limited trial traffic tests recovery.
 - Over-limit requests get `429` with a `Retry-After` header. Limits are per
   client IP and per route.
 
@@ -112,6 +122,7 @@ Short notes on the choices that matter, each with the alternatives I considered.
 - [001: Why a token bucket for rate limiting](docs/decisions/001-rate-limiting.md)
 - [002: Health checks, active versus passive](docs/decisions/002-health-checks.md)
 - [003: ConfigMap aggregation for Routes](docs/decisions/003-controller.md)
+- [004: Passive circuit breaking](docs/decisions/004-circuit-breaker.md)
 
 ## Kubernetes
 
@@ -123,6 +134,10 @@ gateway with:
   pod is not shutting down. Liveness deliberately ignores upstream health, so a
   backend outage does not restart the gateway. See
   [decision 002](docs/decisions/002-health-checks.md).
+- **Circuit breaking.** Each upstream has an independent breaker. Request
+  failures open the circuit before the next active health probe, and a bounded
+  half-open trial set tests recovery. Breakers reset when the gateway runtime
+  is reloaded. See [decision 004](docs/decisions/004-circuit-breaker.md).
 - **Config.** The gateway config lives in a ConfigMap (`values.yaml`, key
   `config`). A checksum annotation rolls the pods for Helm-rendered config
   changes. Controller-written changes are picked up live from the mounted
@@ -204,7 +219,30 @@ reload rather than a rollout.
 
 ## Terraform
 
-*Describe the cluster module, remote state, and how to plan and apply the demo environment.*
+The Helm release is reusable through [terraform/modules/gateway](terraform/modules/gateway).
+For a local kind cluster, build and load the three images with `make cluster
+images`, then use:
+
+```bash
+cd terraform/environments/local
+terraform init
+terraform plan
+terraform apply
+curl http://localhost:8080/api/users/hello
+```
+
+The local environment applies the demo upstreams and observability manifests,
+then installs the gateway chart and controller. Its kubeconfig path and kind
+context can be overridden with Terraform variables.
+
+The paid demo in [terraform/environments/demo](terraform/environments/demo)
+creates a one-node Exoscale SKS cluster and installs the same Helm chart. Set
+`EXOSCALE_API_KEY` and `EXOSCALE_API_SECRET`, supply pullable gateway and
+controller image repositories, and initialize its SOS-compatible S3 backend
+from `backend.hcl.example`. State locking uses the S3 lockfile, so the backend
+bucket must permit get, put, and delete for the state key plus its `.tflock`
+object. Backend credentials and Exoscale credentials stay in environment
+variables; no credential file is committed.
 
 ## Observability
 
@@ -245,6 +283,7 @@ JSON response body.
 | `gateway_request_duration_seconds` | same | Latency histogram |
 | `gateway_ratelimited_total` | `http_route` | Requests rejected with 429 |
 | `gateway_upstreams_healthy` | `http_route` | Upstreams in rotation |
+| `gateway_upstreams_breaker` | `http_route`, `upstream`, `circuit_breaker_state` | Current circuit state for each upstream |
 
 Requests that match no route are recorded under `http_route="unmatched"`.
 `gateway_upstreams_healthy` counts the upstream URLs of a route that are in
@@ -315,12 +354,29 @@ the drain-on-`SIGTERM` behavior and the grace period; see
 [Kubernetes](#kubernetes). It is one run on a single-node kind cluster on a
 laptop, so treat it as evidence the mechanism works, not as a capacity claim.
 
+## Limitations and what I would do next
+
+- TLS is not terminated by the gateway yet. A production deployment should
+  add certificate management at an ingress or gateway layer.
+- The `Route` controller watches one namespace and the CRD has no
+  cross-namespace ownership model.
+- There is no authentication or authorization on proxied traffic. A production
+  version needs identity-aware policies and bounded access to administrative
+  surfaces.
+- Circuit breaker state is in-memory per pod. Sharing failure state across
+  replicas would require a distributed decision and would be less responsive to
+  pod-local failures.
+- The Terraform environment provisions a small SKS demo, not a
+  multi-environment production platform. Production use would add private
+  ingress, network policy, secrets management, backup policy, cost controls,
+  and separate state per environment.
+
 ## Roadmap
 
 - [x] v0.1: proxy, routing, round-robin, health checks, rate limiting
 - [x] v0.2: Helm chart, OpenTelemetry, kind demo
 - [x] v0.3: `Route` controller and atomic hot reload
-- [ ] v0.4: Terraform module and circuit breaker
+- [ ] v0.4: Terraform module and circuit breaker (implementation complete; release pending)
 
 ## License
 

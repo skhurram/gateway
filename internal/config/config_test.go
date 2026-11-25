@@ -13,6 +13,10 @@ import (
 func TestParseValid(t *testing.T) {
 	c, err := config.Parse([]byte(`
 listen: ":9090"
+circuit_breaker:
+  failure_threshold: 3
+  open_timeout: 20s
+  half_open_requests: 2
 routes:
   - prefix: /api/users/
     upstreams: [http://users-1:9000, http://users-2:9000]
@@ -37,6 +41,9 @@ routes:
 	if c.Routes[1].RateLimit != nil {
 		t.Error("route without rate_limit should have nil RateLimit")
 	}
+	if got := c.CircuitBreaker; got.FailureThreshold != 3 || got.OpenTimeout != 20*time.Second || got.HalfOpenRequests != 2 {
+		t.Errorf("circuit breaker = %+v", got)
+	}
 	if c.Health.Path != "/health" || c.Health.Interval != 5*time.Second || c.Health.Timeout != 2*time.Second {
 		t.Errorf("health defaults = %+v", c.Health)
 	}
@@ -58,6 +65,9 @@ routes:
 	if c.Health.Path != "/up" || c.Health.Interval != time.Second || c.Health.Timeout != 500*time.Millisecond {
 		t.Errorf("health = %+v", c.Health)
 	}
+	if got := c.CircuitBreaker; got.FailureThreshold != 5 || got.OpenTimeout != 30*time.Second || got.HalfOpenRequests != 1 {
+		t.Errorf("circuit breaker defaults = %+v", got)
+	}
 }
 
 func TestParseInvalid(t *testing.T) {
@@ -74,6 +84,7 @@ func TestParseInvalid(t *testing.T) {
 		{"bad rate limit", "routes:\n  - {prefix: /a, upstreams: [http://a:1], rate_limit: {requests_per_second: 0, burst: 1}}", "rate_limit"},
 		{"unknown field", "routes:\n  - {prefix: /a, upstream: [http://a:1]}", "upstream"},
 		{"bad health path", "health: {path: up}\nroutes:\n  - {prefix: /a, upstreams: [http://a:1]}", "health"},
+		{"bad breaker", "circuit_breaker: {failure_threshold: -1}\nroutes:\n  - {prefix: /a, upstreams: [http://a:1]}", "circuit_breaker"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

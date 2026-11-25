@@ -1,0 +1,6 @@
+bucket = "edge-gateway-terraform-state"
+region = "ch-gva-2"
+
+endpoints = {
+  s3 = "https://sos-ch-gva-2.exo.io"
+}

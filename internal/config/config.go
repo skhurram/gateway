@@ -15,17 +15,21 @@ import (
 )
 
 const (
-	defaultListen         = ":8080"
-	defaultHealthPath     = "/health"
-	defaultHealthInterval = 5 * time.Second
-	defaultHealthTimeout  = 2 * time.Second
+	defaultListen                  = ":8080"
+	defaultHealthPath              = "/health"
+	defaultHealthInterval          = 5 * time.Second
+	defaultHealthTimeout           = 2 * time.Second
+	defaultBreakerFailureThreshold = 5
+	defaultBreakerOpenTimeout      = 30 * time.Second
+	defaultBreakerHalfOpenRequests = 1
 )
 
 // Config is the top-level gateway configuration.
 type Config struct {
-	Listen string  `yaml:"listen"`
-	Health Health  `yaml:"health"`
-	Routes []Route `yaml:"routes"`
+	Listen         string         `yaml:"listen"`
+	Health         Health         `yaml:"health"`
+	CircuitBreaker CircuitBreaker `yaml:"circuit_breaker"`
+	Routes         []Route        `yaml:"routes"`
 }
 
 // Health configures active upstream health checks.
@@ -33,6 +37,13 @@ type Health struct {
 	Path     string        `yaml:"path"`
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
+}
+
+// CircuitBreaker configures the passive breaker applied to every upstream.
+type CircuitBreaker struct {
+	FailureThreshold int           `yaml:"failure_threshold"`
+	OpenTimeout      time.Duration `yaml:"open_timeout"`
+	HalfOpenRequests int           `yaml:"half_open_requests"`
 }
 
 // Route maps a path prefix to a pool of upstreams.
@@ -108,9 +119,27 @@ func (c *Config) applyDefaults() {
 	if c.Health.Timeout == 0 {
 		c.Health.Timeout = defaultHealthTimeout
 	}
+	c.CircuitBreaker = c.EffectiveCircuitBreaker()
 	for i := range c.Routes {
 		c.Routes[i].Prefix = NormalizePrefix(c.Routes[i].Prefix)
 	}
+}
+
+// EffectiveCircuitBreaker returns the circuit breaker settings with defaults
+// applied. This keeps programmatically constructed configs consistent with
+// parsed YAML configs.
+func (c *Config) EffectiveCircuitBreaker() CircuitBreaker {
+	cb := c.CircuitBreaker
+	if cb.FailureThreshold == 0 {
+		cb.FailureThreshold = defaultBreakerFailureThreshold
+	}
+	if cb.OpenTimeout == 0 {
+		cb.OpenTimeout = defaultBreakerOpenTimeout
+	}
+	if cb.HalfOpenRequests == 0 {
+		cb.HalfOpenRequests = defaultBreakerHalfOpenRequests
+	}
+	return cb
 }
 
 // NormalizePrefix strips trailing slashes, keeping "/" for the root prefix.
@@ -131,6 +160,11 @@ func (c *Config) validate() error {
 	}
 	if !strings.HasPrefix(c.Health.Path, "/") {
 		return fmt.Errorf("health: path %q must start with /", c.Health.Path)
+	}
+	if c.CircuitBreaker.FailureThreshold < 1 ||
+		c.CircuitBreaker.OpenTimeout <= 0 ||
+		c.CircuitBreaker.HalfOpenRequests < 1 {
+		return errors.New("circuit_breaker: failure_threshold, open_timeout, and half_open_requests must be positive")
 	}
 	if len(c.Routes) == 0 {
 		return errors.New("at least one route is required")

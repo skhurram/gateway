@@ -72,6 +72,10 @@ func run() int {
 		log.Printf("metrics: %v", err)
 		return 1
 	}
+	if err := proxy.RegisterBreakerStateGauge(manager.router); err != nil {
+		log.Printf("metrics: %v", err)
+		return 1
+	}
 
 	// draining flips /readyz to 503 as soon as shutdown starts, so load
 	// balancers stop sending new traffic while in-flight requests finish.
