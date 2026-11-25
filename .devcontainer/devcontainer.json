@@ -3,7 +3,13 @@
   "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
 
   "hostRequirements": {
-    "cpus": 4
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+
+  "containerEnv": {
+    "GOTOOLCHAIN": "auto"
   },
 
   "features": {
@@ -19,17 +25,34 @@
 
   "postCreateCommand": "bash .devcontainer/post-create.sh",
 
-  "forwardPorts": [8080],
+  "forwardPorts": [8080, 16686, 8889],
   "portsAttributes": {
     "8080": {
-      "label": "gateway"
+      "label": "gateway (kind NodePort)",
+      "onAutoForward": "notify"
+    },
+    "16686": {
+      "label": "jaeger UI (after kubectl port-forward)",
+      "onAutoForward": "silent"
+    },
+    "8889": {
+      "label": "collector metrics (after kubectl port-forward)",
+      "onAutoForward": "silent"
     }
   },
 
   "customizations": {
+    "codespaces": {
+      "openFiles": [
+        "plan/sessions/2026-11-25-codespaces-handoff.md",
+        "plan/week3-tasks.md"
+      ]
+    },
     "vscode": {
       "extensions": [
         "golang.go",
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
         "hashicorp.terraform",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
         "redhat.vscode-yaml",
