@@ -38,15 +38,16 @@ flowchart LR
 
 ## Quick start
 
-Requirements: Go, Docker, kind, kubectl, Helm.
+Requirements: Go (version in `go.mod`).
 
 ```bash
-make up        # create a kind cluster and deploy the gateway
 make test      # unit tests with the race detector
-make down      # tear everything down
+make run       # run the gateway on :8080 (single upstream via flags)
 ```
 
-To run just the binary against a config file:
+`make up` and `make down` (kind cluster and Helm deploy) arrive in v0.2.
+
+To run the binary against a config file:
 
 ```bash
 go run ./cmd/gateway -config gateway.yaml
@@ -91,8 +92,8 @@ health:            # optional, these are the defaults
 Short notes on the choices that matter, each with the alternatives I considered.
 
 - [001: Why a token bucket for rate limiting](docs/decisions/001-rate-limiting.md)
-- [002: Health checks, active versus passive](docs/decisions/002-health-checks.md)
-- [003: Controller versus config file](docs/decisions/003-controller.md)
+- 002: Health checks, active versus passive (planned)
+- 003: Controller versus config file (planned)
 
 ## Kubernetes
 

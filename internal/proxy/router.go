@@ -38,7 +38,7 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper) (*Router, error) {
 			}
 			ups = append(ups, balancer.NewUpstream(u))
 		}
-		var h http.Handler = NewBalanced(balancer.NewRoundRobin(ups), rt)
+		h := NewBalanced(balancer.NewRoundRobin(ups), rt)
 		if rl := rc.RateLimit; rl != nil {
 			h = ratelimit.Middleware(ratelimit.New(rl.RequestsPerSecond, rl.Burst, nil))(h)
 		}
