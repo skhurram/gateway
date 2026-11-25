@@ -2,11 +2,14 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"gateway/internal/balancer"
 )
 
 // Client-side (gateway -> upstream) timeouts.
@@ -38,16 +41,25 @@ func NewTransport() *http.Transport {
 	}
 }
 
-// New returns a handler that forwards requests to target. It sets
+type upstreamKey struct{}
+
+// New returns a handler that forwards requests to a single target. It sets
 // X-Forwarded-For/Host/Proto from the inbound connection, discarding any
 // values supplied by the client.
 func New(target *url.URL, rt http.RoundTripper) http.Handler {
+	return NewBalanced(balancer.NewRoundRobin([]*balancer.Upstream{balancer.NewUpstream(target)}), rt)
+}
+
+// NewBalanced returns a handler that forwards each request to the upstream
+// chosen by b. It responds 503 when b has no healthy upstream and 502 when the
+// chosen upstream cannot be reached.
+func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 	if rt == nil {
 		rt = NewTransport()
 	}
-	return &httputil.ReverseProxy{
+	rp := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(target)
+			r.SetURL(r.In.Context().Value(upstreamKey{}).(*url.URL))
 			r.SetXForwarded()
 		},
 		Transport: rt,
@@ -55,6 +67,14 @@ func New(target *url.URL, rt http.RoundTripper) http.Handler {
 			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		},
 	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, err := b.Next()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, u.URL)))
+	})
 }
 
 // NewServer returns an http.Server with timeouts set.
