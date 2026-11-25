@@ -30,6 +30,22 @@ jobs:
         with:
           version: v2.15.0
 
+  controller:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: controller
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: controller/go.mod
+      - run: make test
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+          working-directory: controller
+
   helm:
     runs-on: ubuntu-latest
     steps:
@@ -49,3 +65,5 @@ jobs:
         run: docker build -t edge-gateway:ci .
       - name: Build echo image
         run: docker build --build-arg CMD=echo -t edge-gateway-echo:ci .
+      - name: Build controller image
+        run: docker build -t edge-gateway-controller:ci controller

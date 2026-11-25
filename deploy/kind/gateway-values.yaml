@@ -5,6 +5,12 @@ image:
   # The image is loaded into the cluster with `kind load`, never pulled.
   pullPolicy: Never
 
+controller:
+  image:
+    repository: edge-gateway-controller
+    tag: dev
+    pullPolicy: Never
+
 service:
   type: NodePort
   nodePort: 30080 # mapped to localhost:8080 by kind-config.yaml

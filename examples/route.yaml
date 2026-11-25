@@ -1,0 +1,11 @@
+apiVersion: gateway.gateway.local/v1alpha1
+kind: Route
+metadata:
+  name: users
+spec:
+  prefix: /api/users
+  upstreams:
+    - http://echo-users:8080
+  rateLimit:
+    requestsPerSecond: 200
+    burst: 400

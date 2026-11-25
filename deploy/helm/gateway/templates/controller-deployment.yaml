@@ -1,0 +1,56 @@
+{{- if .Values.controller.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gateway.controllerName" . }}
+  labels:
+    {{- include "gateway.controllerLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gateway.controllerLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.controllerLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gateway.controllerName" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          args:
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=0
+            - --webhook-port=-1
+            - --config-map-name={{ include "gateway.configMapName" . }}
+            - --config-map-key={{ .Values.controller.configMapKey }}
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+{{- end }}

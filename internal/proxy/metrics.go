@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -64,6 +65,29 @@ func (m *metrics) record(ctx context.Context, route string, status int, d time.D
 
 func (m *metrics) rateLimited(ctx context.Context, route string) {
 	m.limited.Add(ctx, 1, metric.WithAttributes(attribute.String(routeAttr, route)))
+}
+
+// RegisterHealthyUpstreamGauge registers the gateway-wide health gauge once.
+// current must read the active router so config reloads do not create duplicate
+// observable instruments.
+func RegisterHealthyUpstreamGauge(current func() *Router) error {
+	return RegisterHealthyUpstreamGaugeWithProvider(otel.GetMeterProvider(), current)
+}
+
+// RegisterHealthyUpstreamGaugeWithProvider is RegisterHealthyUpstreamGauge with
+// an explicit meter provider for tests and alternate exporters.
+func RegisterHealthyUpstreamGaugeWithProvider(mp metric.MeterProvider, current func() *Router) error {
+	meter := mp.Meter("gateway/proxy")
+	_, err := meter.Int64ObservableGauge("gateway.upstreams.healthy",
+		metric.WithDescription("Upstreams currently in rotation, by route."),
+		metric.WithUnit("{upstream}"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			if r := current(); r != nil {
+				r.ObserveHealthy(o)
+			}
+			return nil
+		}))
+	return err
 }
 
 // statusRecorder remembers the response status. Unwrap lets

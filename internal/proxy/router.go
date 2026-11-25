@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -86,25 +85,20 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper, opts ...RouterOption) (
 		return len(r.routes[i].prefix) > len(r.routes[j].prefix)
 	})
 
-	_, err = meter.Int64ObservableGauge("gateway.upstreams.healthy",
-		metric.WithDescription("Upstreams currently in rotation, by route."),
-		metric.WithUnit("{upstream}"),
-		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
-			for _, rte := range r.routes {
-				n := 0
-				for _, u := range rte.upstreams {
-					if u.Healthy() {
-						n++
-					}
-				}
-				o.Observe(int64(n), metric.WithAttributes(attribute.String(routeAttr, rte.prefix)))
-			}
-			return nil
-		}))
-	if err != nil {
-		return nil, err
-	}
 	return r, nil
+}
+
+// ObserveHealthy records the healthy upstream count for each route.
+func (r *Router) ObserveHealthy(o metric.Int64Observer) {
+	for _, rte := range r.routes {
+		n := 0
+		for _, u := range rte.upstreams {
+			if u.Healthy() {
+				n++
+			}
+		}
+		o.Observe(int64(n), metric.WithAttributes(attribute.String(routeAttr, rte.prefix)))
+	}
 }
 
 // Upstreams returns every upstream across all routes, for health checking.

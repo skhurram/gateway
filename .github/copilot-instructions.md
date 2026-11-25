@@ -3,7 +3,8 @@
 A Go reverse proxy and API gateway, deployed to Kubernetes with Helm, built as a 4-week learning and portfolio project. Plans are in `plan/` (`week1-tasks.md` to `week4-tasks.md`). The latest session handoff is in `plan/sessions/`. Read it before starting work.
 
 ## Status
-Weeks 1 and 2 are done (tags `v0.1.0`, `v0.2.0`). Week 3 (a `Route` controller and gateway hot reload) is next. Terraform is Week 4.
+Weeks 1 and 2 are done (tags `v0.1.0`, `v0.2.0`). Week 3 (`Route` controller and
+gateway hot reload) is implemented but not tagged. Terraform is Week 4.
 
 ## Commands
 - `make test` runs `go test -race ./...`. `make vet`, `make lint` (golangci-lint v2.15.0, same as CI), `gofmt -l .`.
@@ -16,7 +17,7 @@ Weeks 1 and 2 are done (tags `v0.1.0`, `v0.2.0`). Week 3 (a `Route` controller a
 - `internal/{config,proxy,balancer,health,ratelimit,telemetry}`. `internal/breaker` is a placeholder.
 - `deploy/helm/gateway` (chart), `deploy/kind`, `deploy/observability.yaml`, `scripts/`.
 - `docs/decisions/` holds short decision notes. Add one when a design choice has real alternatives.
-- `controller/` is empty until Week 3.
+- `controller/` is a separate Go module for the `Route` controller.
 
 ## Conventions
 - Standard library first. Add a dependency only with a reason. Current ones: `yaml.v3` and OpenTelemetry.

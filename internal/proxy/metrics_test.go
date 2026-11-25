@@ -113,6 +113,9 @@ func TestHealthyUpstreamGauge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := proxy.RegisterHealthyUpstreamGaugeWithProvider(mp, func() *proxy.Router { return r }); err != nil {
+		t.Fatal(err)
+	}
 
 	healthy := func() int64 {
 		g, ok := collect(t, reader)["gateway.upstreams.healthy"].Data.(metricdata.Gauge[int64])

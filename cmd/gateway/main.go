@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"gateway/internal/config"
-	"gateway/internal/health"
 	"gateway/internal/proxy"
 	"gateway/internal/telemetry"
 )
@@ -65,50 +63,68 @@ func run() int {
 		}
 	}()
 
-	// The transport injects W3C trace context into upstream requests.
-	router, err := proxy.NewRouter(cfg, otelhttp.NewTransport(proxy.NewTransport()))
-	if err != nil {
-		log.Printf("router: %v", err)
+	manager := newRuntimeManager(ctx, otelhttp.NewTransport(proxy.NewTransport()))
+	if err := manager.initialize(cfg); err != nil {
+		log.Printf("runtime: %v", err)
 		return 1
 	}
-
-	checker := &health.Checker{
-		Upstreams: router.Upstreams(),
-		Path:      cfg.Health.Path,
-		Interval:  cfg.Health.Interval,
-		Timeout:   cfg.Health.Timeout,
+	if err := proxy.RegisterHealthyUpstreamGauge(manager.router); err != nil {
+		log.Printf("metrics: %v", err)
+		return 1
 	}
-	// Probe once before serving so /readyz reflects real upstream state from
-	// the first request instead of the optimistic initial value.
-	checker.CheckOnce(ctx)
 
 	// draining flips /readyz to 503 as soon as shutdown starts, so load
 	// balancers stop sending new traffic while in-flight requests finish.
 	var draining atomic.Bool
-	ready := func() bool { return !draining.Load() && router.Ready() }
+	ready := func() bool { return !draining.Load() && manager.ready() }
 
 	// Probes sit outside the tracing handler so they don't create spans.
-	traced := otelhttp.NewHandler(router, "gateway",
+	traced := otelhttp.NewHandler(http.HandlerFunc(manager.serveHTTP), "gateway",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method }))
 	srv := proxy.NewServer(cfg.Listen, proxy.WithProbes(traced, ready))
 
-	var bg sync.WaitGroup
-	bg.Add(1)
-	go func() {
-		defer bg.Done()
-		checker.Run(ctx)
-	}()
-
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	log.Printf("gateway listening on %s with %d route(s)", cfg.Listen, len(cfg.Routes))
+	watcherDone := make(chan error, 1)
+	watching := *configPath != ""
+	if watching {
+		go func() {
+			watcherDone <- config.Watch(ctx, *configPath, func() {
+				if err := manager.reload(*configPath); err != nil {
+					log.Printf("config reload failed: %v", err)
+					return
+				}
+				cfg := manager.config()
+				log.Printf("config reload succeeded: %d route(s)", len(cfg.Routes))
+			})
+		}()
+	}
+	active := manager.config()
+	log.Printf("gateway listening on %s with %d route(s)", active.Listen, len(active.Routes))
 
 	select {
 	case err := <-errCh:
+		stop()
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("serve: %v", err)
+			if watching {
+				if watchErr := <-watcherDone; watchErr != nil {
+					log.Printf("config watcher: %v", watchErr)
+				}
+			}
+			manager.wait()
+			return 1
+		}
+	case err := <-watcherDone:
+		if err != nil {
+			log.Printf("config watcher: %v", err)
 			stop()
-			bg.Wait()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			if shutdownErr := srv.Shutdown(shutdownCtx); shutdownErr != nil {
+				log.Printf("shutdown: %v", shutdownErr)
+			}
+			cancel()
+			manager.wait()
 			return 1
 		}
 	case <-ctx.Done():
@@ -118,10 +134,20 @@ func run() int {
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown: %v", err)
-			bg.Wait()
+			if watching {
+				if watchErr := <-watcherDone; watchErr != nil {
+					log.Printf("config watcher: %v", watchErr)
+				}
+			}
+			manager.wait()
 			return 1
 		}
 	}
-	bg.Wait()
+	if watching {
+		if watchErr := <-watcherDone; watchErr != nil {
+			log.Printf("config watcher: %v", watchErr)
+		}
+	}
+	manager.wait()
 	return 0
 }

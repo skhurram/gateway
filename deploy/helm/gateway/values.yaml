@@ -6,6 +6,22 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+controller:
+  enabled: true
+  image:
+    repository: edge-gateway-controller
+    tag: ""
+    pullPolicy: IfNotPresent
+  configMapName: ""
+  configMapKey: gateway.yaml
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
 # Ignored when autoscaling.enabled is true, because the HPA owns the count.
 replicaCount: 2
 

@@ -1,10 +1,11 @@
-.PHONY: run build test lint vet up down cluster images deploy metrics-server rollout-test helm-check
+.PHONY: run build test controller-test controller-manifests lint vet up down cluster images deploy metrics-server rollout-test helm-check
 
 CLUSTER      ?= edge-gateway
 CTX          ?= kind-$(CLUSTER)
 NS           ?= edge
 GATEWAY_IMG  ?= edge-gateway:dev
 ECHO_IMG     ?= edge-gateway-echo:dev
+CONTROLLER_IMG ?= edge-gateway-controller:dev
 KUBECTL      := kubectl --context $(CTX)
 HELM         := helm --kube-context $(CTX)
 
@@ -20,10 +21,18 @@ vet:
 test:
 	go test -race ./...
 
+controller-test:
+	$(MAKE) -C controller test
+
+controller-manifests:
+	$(MAKE) -C controller manifests
+	cp controller/config/crd/bases/gateway.gateway.local_routes.yaml \
+		deploy/helm/gateway/crds/routes.gateway.gateway.local.yaml
+
 lint:
 	golangci-lint run ./...
 
-helm-check:
+helm-check: controller-manifests
 	helm lint deploy/helm/gateway --kube-version 1.31.0
 	helm template gateway deploy/helm/gateway --kube-version 1.31.0 -f deploy/kind/gateway-values.yaml > /dev/null
 
@@ -44,7 +53,8 @@ cluster:
 images:
 	docker build -t $(GATEWAY_IMG) .
 	docker build --build-arg CMD=echo -t $(ECHO_IMG) .
-	kind load docker-image $(GATEWAY_IMG) $(ECHO_IMG) --name $(CLUSTER)
+	docker build -t $(CONTROLLER_IMG) controller
+	kind load docker-image $(GATEWAY_IMG) $(ECHO_IMG) $(CONTROLLER_IMG) --name $(CLUSTER)
 
 # The HPA needs metrics-server. kind uses self-signed kubelet certificates.
 # Non-fatal: the gateway works without it, only autoscaling does not.
@@ -60,9 +70,10 @@ deploy:
 	$(HELM) upgrade --install gateway deploy/helm/gateway -n $(NS) \
 		-f deploy/kind/gateway-values.yaml --wait --timeout 3m && \
 	if [ "$$existing" = yes ]; then \
-		$(KUBECTL) -n $(NS) rollout restart deployment/gateway deployment/echo-users deployment/echo-orders deployment/otel-collector; \
+		$(KUBECTL) -n $(NS) rollout restart deployment/gateway deployment/gateway-controller deployment/echo-users deployment/echo-orders deployment/otel-collector; \
 	fi && \
 	$(KUBECTL) -n $(NS) rollout status deployment/gateway --timeout=180s && \
+	$(KUBECTL) -n $(NS) rollout status deployment/gateway-controller --timeout=180s && \
 	$(KUBECTL) -n $(NS) rollout status deployment/echo-users deployment/echo-orders --timeout=180s
 
 # Load test through the gateway while it does a rolling update; fails on any

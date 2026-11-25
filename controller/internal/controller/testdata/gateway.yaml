@@ -1,0 +1,15 @@
+listen: :8080
+health:
+    path: /health
+    interval: 5s
+    timeout: 2s
+routes:
+    - prefix: /api/orders
+      upstreams:
+        - http://upstream-orders:8080
+      rate_limit:
+        requests_per_second: 25
+        burst: 50
+    - prefix: /api/users
+      upstreams:
+        - http://upstream-users:8080

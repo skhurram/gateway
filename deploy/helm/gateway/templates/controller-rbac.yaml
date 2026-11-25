@@ -1,0 +1,39 @@
+{{- if .Values.controller.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gateway.controllerName" . }}
+  labels:
+    {{- include "gateway.controllerLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["gateway.gateway.local"]
+    resources: ["routes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.gateway.local"]
+    resources: ["routes/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gateway.controllerName" . }}
+  labels:
+    {{- include "gateway.controllerLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gateway.controllerName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateway.controllerName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

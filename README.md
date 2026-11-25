@@ -15,10 +15,10 @@ I built it to practice production-grade Go, Kubernetes platform tooling, and inf
 | Active health checks | done |
 | Token-bucket rate limiting (per client IP) | done |
 | Circuit breaker | planned |
-| Hot config reload | planned |
+| Atomic hot config reload | done |
 | OpenTelemetry traces and metrics | done |
 | Helm chart (probes, autoscaler, disruption budget) | done |
-| `Route` custom resource and controller | planned |
+| `Route` custom resource and controller | done |
 | Terraform cluster module | planned |
 
 ## Architecture
@@ -38,7 +38,9 @@ flowchart LR
     OTEL -->|metrics| P[Prometheus endpoint]
 ```
 
-*The `Route` controller is not built yet (v0.3).*
+The `Route` controller aggregates resources into the gateway ConfigMap. Mounted
+ConfigMap updates can take up to about a minute to reach each pod; the gateway
+then validates and atomically applies the new runtime.
 
 ## Quick start
 
@@ -58,6 +60,9 @@ After `make up`:
 ```bash
 curl localhost:8080/api/users/hello    # served by echo-users via the gateway
 curl localhost:8080/api/orders/hello   # served by echo-orders
+kubectl -n edge apply -f examples/route.yaml
+kubectl -n edge get routes
+curl localhost:8080/api/users/hello    # now served from the Route aggregate
 ```
 
 To run the binary against a config file:
@@ -106,7 +111,7 @@ Short notes on the choices that matter, each with the alternatives I considered.
 
 - [001: Why a token bucket for rate limiting](docs/decisions/001-rate-limiting.md)
 - [002: Health checks, active versus passive](docs/decisions/002-health-checks.md)
-- 003: Controller versus config file (planned)
+- [003: ConfigMap aggregation for Routes](docs/decisions/003-controller.md)
 
 ## Kubernetes
 
@@ -119,7 +124,15 @@ gateway with:
   backend outage does not restart the gateway. See
   [decision 002](docs/decisions/002-health-checks.md).
 - **Config.** The gateway config lives in a ConfigMap (`values.yaml`, key
-  `config`). A checksum annotation rolls the pods when it changes.
+  `config`). A checksum annotation rolls the pods for Helm-rendered config
+  changes. Controller-written changes are picked up live from the mounted
+  directory. Invalid updates leave the last good router and health checker in
+  place.
+- **Route controller.** The chart installs the `Route` CRD, controller
+  Deployment, ServiceAccount and RBAC. The controller lists all Routes in a
+  namespace and writes one deterministic ConfigMap entry. `Ready` and
+  `Conflict` conditions show which Routes are active. See
+  [decision 003](docs/decisions/003-controller.md).
 - **Hardening.** Non-root user, read-only root filesystem, all capabilities
   dropped, `RuntimeDefault` seccomp, no service account token. The image is
   distroless and multi-stage built (`docker build .`): **31 MB**, runs as
@@ -145,7 +158,49 @@ helm install gateway deploy/helm/gateway \
 to route `/api/users` and `/api/orders` to two demo echo services, and installs
 metrics-server so the autoscaler has data.
 
-*How the `Route` resource is reconciled arrives with the controller in v0.3.*
+Helm installs CRDs from `crds/` only on the initial install; Helm does not
+upgrade them. Before a chart upgrade that changes the Route schema, apply the
+generated CRD explicitly:
+
+```bash
+kubectl apply -f deploy/helm/gateway/crds/routes.gateway.gateway.local.yaml
+```
+
+The chart can be upgraded after the CRD. The committed CRD is generated from
+`controller/api/v1alpha1/route_types.go` and copied into the chart with
+`make controller-manifests`.
+
+The Route example changes the mounted aggregate without restarting the
+gateway:
+
+```bash
+kubectl -n edge apply -f examples/route.yaml
+kubectl -n edge get routes
+curl localhost:8080/api/users/hello
+```
+
+ConfigMap projection is eventually consistent, so allow up to about a minute
+between applying a Route and observing a live routing change.
+
+Verified on the 2026-11-25 Codespace kind demo (Kubernetes 1.37):
+
+```text
+$ kubectl -n edge get routes
+NAME    PREFIX       READY
+users   /api/users   True
+
+$ curl localhost:8080/api/users/demo
+{"service":"users", ... "path":"/api/users/demo" ...}
+
+# Edit the Route from echo-users /api/users to echo-orders /api/orders.
+$ curl -w '%{http_code}' localhost:8080/api/orders/live
+200
+$ curl -w '%{http_code}' localhost:8080/api/users/live
+404
+```
+
+Both gateway pod UIDs were unchanged, so the second curl result came from hot
+reload rather than a rollout.
 
 ## Terraform
 
@@ -264,8 +319,8 @@ laptop, so treat it as evidence the mechanism works, not as a capacity claim.
 
 - [x] v0.1: proxy, routing, round-robin, health checks, rate limiting
 - [x] v0.2: Helm chart, OpenTelemetry, kind demo
-- [ ] v0.3: `Route` controller
-- [ ] v0.4: Terraform module, circuit breaker, hot reload
+- [x] v0.3: `Route` controller and atomic hot reload
+- [ ] v0.4: Terraform module and circuit breaker
 
 ## License
 
