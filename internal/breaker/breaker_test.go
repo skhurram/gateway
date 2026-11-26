@@ -202,3 +202,23 @@ func TestConcurrentUse(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestReleaseFreesHalfOpenTrial(t *testing.T) {
+	clk := newClock()
+	b := newBreaker(t, clk, 1, 1)
+	b.Failure()
+	clk.Advance(time.Minute)
+
+	if !b.Allow() {
+		t.Fatal("first half-open trial should be admitted")
+	}
+	if b.Allow() {
+		t.Fatal("second trial should be refused while the first is outstanding")
+	}
+	// The admitted request never reached the upstream, so its outcome is
+	// unknown. Releasing the reservation must let a later request try again.
+	b.Release()
+	if !b.Allow() {
+		t.Fatal("trial slot was not released; breaker is stuck half-open")
+	}
+}

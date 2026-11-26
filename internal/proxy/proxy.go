@@ -41,7 +41,18 @@ func NewTransport() *http.Transport {
 	}
 }
 
-type upstreamKey struct{}
+// attempt is the per-request record of one upstream selection. settled is set
+// once the transport has recorded an outcome for it.
+type attempt struct {
+	u       *balancer.Upstream
+	settled bool
+}
+
+type attemptKey struct{}
+
+func attemptFrom(ctx context.Context) *attempt {
+	return ctx.Value(attemptKey{}).(*attempt)
+}
 
 // New returns a handler that forwards requests to a single target. It sets
 // X-Forwarded-For/Host/Proto from the inbound connection, discarding any
@@ -59,7 +70,7 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(r.In.Context().Value(upstreamKey{}).(*balancer.Upstream).URL)
+			r.SetURL(attemptFrom(r.In.Context()).u.URL)
 			r.SetXForwarded()
 		},
 		Transport: breakerTransport{next: rt},
@@ -73,7 +84,13 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
-		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, u)))
+		a := &attempt{u: u}
+		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), attemptKey{}, a)))
+		// If the transport never reported an outcome, return any half-open
+		// trial reserved by Next so the breaker cannot get stuck.
+		if !a.settled {
+			u.Release()
+		}
 	})
 }
 
@@ -82,16 +99,22 @@ type breakerTransport struct {
 }
 
 func (t breakerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	u := r.Context().Value(upstreamKey{}).(*balancer.Upstream)
+	a := attemptFrom(r.Context())
 	resp, err := t.next.RoundTrip(r)
+	a.settled = true
 	if err != nil {
-		u.RecordFailure()
+		// A client that went away is not evidence the upstream is unhealthy.
+		if r.Context().Err() != nil {
+			a.u.Release()
+		} else {
+			a.u.RecordFailure()
+		}
 		return nil, err
 	}
 	if resp.StatusCode >= http.StatusInternalServerError {
-		u.RecordFailure()
+		a.u.RecordFailure()
 	} else {
-		u.RecordSuccess()
+		a.u.RecordSuccess()
 	}
 	return resp, nil
 }

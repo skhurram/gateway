@@ -134,6 +134,18 @@ func (b *Breaker) Failure() {
 	}
 }
 
+// Release returns a half-open trial reserved by Allow without recording an
+// outcome. Use it when an admitted request never produced a verdict on the
+// upstream, so the trial slot is not lost.
+func (b *Breaker) Release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.state == HalfOpen && b.halfOpenTrials > 0 {
+		b.halfOpenTrials--
+	}
+}
+
 // State returns the current breaker state. An open breaker becomes half-open
 // only when Allow admits the first trial request after its timeout.
 func (b *Breaker) State() State {

@@ -58,6 +58,14 @@ func (u *Upstream) RecordFailure() {
 	}
 }
 
+// Release gives back a reservation made by Acquire when the request ended
+// without a verdict on the upstream (for example, the client went away first).
+func (u *Upstream) Release() {
+	if u.breaker != nil {
+		u.breaker.Release()
+	}
+}
+
 // BreakerState returns the upstream's passive circuit state.
 func (u *Upstream) BreakerState() breaker.State {
 	if u.breaker == nil {
