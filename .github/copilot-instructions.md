@@ -1,10 +1,10 @@
 # edge-gateway: instructions for coding agents
 
-A Go reverse proxy and API gateway, deployed to Kubernetes with Helm, built as a 4-week learning and portfolio project. Plans are in `plan/` (`week1-tasks.md` to `week4-tasks.md`). The latest session handoff is in `plan/sessions/`. Read it before starting work.
+A Go reverse proxy and API gateway, deployed to Kubernetes with Helm and provisioned with Terraform. Read `README.md` and `docs/decisions/` before starting work.
 
 ## Status
-Weeks 1 and 2 are done (tags `v0.1.0`, `v0.2.0`). Week 3 (`Route` controller and
-gateway hot reload) is implemented but not tagged. Terraform is Week 4.
+`v0.4.0` is tagged. Open known issues are tracked in GitHub issues. Check the
+README's limitations section before claiming a feature works in production.
 
 ## Commands
 - `make test` runs `go test -race ./...`. `make vet`, `make lint` (golangci-lint v2.15.0, same as CI), `gofmt -l .`.
@@ -14,7 +14,7 @@ gateway hot reload) is implemented but not tagged. Terraform is Week 4.
 
 ## Layout
 - `cmd/gateway` (main), `cmd/echo` (demo upstream).
-- `internal/{config,proxy,balancer,health,ratelimit,telemetry}`. `internal/breaker` is a placeholder.
+- `internal/{config,proxy,balancer,health,ratelimit,telemetry,breaker}`.
 - `deploy/helm/gateway` (chart), `deploy/kind`, `deploy/observability.yaml`, `scripts/`.
 - `docs/decisions/` holds short decision notes. Add one when a design choice has real alternatives.
 - `controller/` is a separate Go module for the `Route` controller.
@@ -32,7 +32,7 @@ gateway hot reload) is implemented but not tagged. Terraform is Week 4.
 - The proxy forwards the full request path (no prefix stripping).
 - Run golangci-lint with a Go at least as new as `go.mod` (`go 1.27.1`).
 - When creating new `.go` files, check the first lines. Some editors insert a stray duplicate `package` line.
-- Hot reload (Week 3) must swap the router, the health checker and the metrics gauge callback together. See the handoff note.
+- Hot reload must swap the router, the health checker and the metrics gauge callback together. See `internal/config` and `cmd/gateway/runtime.go`.
 
 ## Working agreements
 - Do not push, tag, delete branches or clusters, or change repository visibility without asking.

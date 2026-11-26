@@ -42,12 +42,6 @@
   },
 
   "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "plan/sessions/2026-11-25-codespaces-handoff.md",
-        "plan/week3-tasks.md"
-      ]
-    },
     "vscode": {
       "extensions": [
         "golang.go",

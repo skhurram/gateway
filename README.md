@@ -7,6 +7,8 @@ I built it to practice production-grade Go, Kubernetes platform tooling, and inf
 > **Status:** `v0.4.0` implementation is complete. The local demo is verified;
 > GitHub release notes and the paid cloud demo remain pending.
 
+Built with AI coding assistants. See [how this was built](docs/how-this-was-built.md).
+
 ## Features
 
 | Feature | Status |
@@ -14,7 +16,7 @@ I built it to practice production-grade Go, Kubernetes platform tooling, and inf
 | Path-prefix routing to multiple upstreams | done |
 | Round-robin load balancing | done |
 | Active health checks | done |
-| Token-bucket rate limiting (per client IP) | done |
+| Token-bucket rate limiting (per client IP; see limitations) | done |
 | Circuit breaker | done |
 | Atomic hot config reload | done |
 | OpenTelemetry traces and metrics | done |
@@ -245,7 +247,9 @@ controller image repositories, and initialize its SOS-compatible S3 backend
 from `backend.hcl.example`. State locking uses the S3 lockfile, so the backend
 bucket must permit get, put, and delete for the state key plus its `.tflock`
 object. Backend credentials and Exoscale credentials stay in environment
-variables; no credential file is committed.
+variables; no credential file is committed. The demo's state still contains the
+short-lived admin kubeconfig: the output is marked sensitive, which hides it from
+plan output but not from state. Keep the state bucket private.
 
 ## Observability
 
@@ -381,6 +385,15 @@ laptop, so treat it as evidence the mechanism works, not as a capacity claim.
   multi-environment production platform. Production use would add private
   ingress, network policy, secrets management, backup policy, cost controls,
   and separate state per environment.
+- Rate limiting is keyed on the connection's peer address. Behind an ingress or
+  load balancer, all clients share one bucket until trusted-proxy handling
+  lands ([issue #9](https://github.com/skhurram/gateway/issues/9)).
+- The `Route` controller and the Helm chart write the same ConfigMap. A
+  `helm upgrade` replaces Route-generated routes with the chart's values, and
+  the controller does not reconcile until the next Route change. Once any Route
+  exists, routes declared in the chart values are dropped.
+- Open issues and known findings are listed in the
+  [issue tracker](https://github.com/skhurram/gateway/issues).
 
 ## Roadmap
 

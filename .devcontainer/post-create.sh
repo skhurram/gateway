@@ -49,5 +49,4 @@ cat <<'EOF'
     make test                 # unit tests with -race (no cluster needed)
     make up                   # kind cluster + full demo (about 4 minutes cold)
     make rollout-test         # zero-downtime rollout proof (needs make up)
-    plan/sessions/2026-11-25-codespaces-handoff.md   # where the previous session stopped
 EOF
