@@ -3,12 +3,17 @@ package health
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"gateway/internal/balancer"
 )
+
+// maxDrainBytes bounds how much of a probe response is read so the connection
+// can be reused. Health responses are normally far smaller.
+const maxDrainBytes = 64 << 10
 
 // Checker polls each upstream's health endpoint. A 2xx response marks the
 // upstream healthy; anything else (including timeouts and connection errors)
@@ -90,6 +95,9 @@ func (c *Checker) probe(ctx context.Context, client *http.Client, u *balancer.Up
 		u.SetHealthy(false)
 		return
 	}
+	// Read the body before closing so the transport can reuse the connection.
+	// The read is bounded so a large or endless body can't stall the probe.
+	_, _ = io.CopyN(io.Discard, resp.Body, maxDrainBytes)
 	_ = resp.Body.Close()
 	u.SetHealthy(resp.StatusCode >= 200 && resp.StatusCode < 300)
 }
