@@ -3,6 +3,9 @@ package ratelimit_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,5 +142,32 @@ func TestRetryAfterIsAtLeastOneSecond(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "1" {
 		t.Errorf("got %d Retry-After=%q, want 429 and 1", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+// Concurrent clients each get exactly their own burst; run with -race.
+func TestConcurrentClientsKeepSeparateBudgets(t *testing.T) {
+	l := ratelimit.New(1, 5, newClock().Now)
+	const clients = 200
+	allowed := make([]atomic.Int32, clients)
+	var wg sync.WaitGroup
+	for c := range clients {
+		for range 4 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 5 {
+					if ok, _ := l.Allow("client-" + strconv.Itoa(c)); ok {
+						allowed[c].Add(1)
+					}
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	for c := range clients {
+		if got := allowed[c].Load(); got != 5 {
+			t.Fatalf("client %d: %d requests allowed, want its burst of 5", c, got)
+		}
 	}
 }

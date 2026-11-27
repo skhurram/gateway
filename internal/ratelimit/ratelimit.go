@@ -2,6 +2,7 @@
 package ratelimit
 
 import (
+	"hash/maphash"
 	"math"
 	"net"
 	"net/http"
@@ -10,11 +11,23 @@ import (
 	"time"
 )
 
-const sweepInterval = time.Minute
+const (
+	sweepInterval = time.Minute
+	// shardCount splits the buckets across independently locked shards, so
+	// unrelated clients rarely contend, and a sweep pauses only the clients
+	// in one shard while it walks 1/shardCount of the buckets.
+	shardCount = 64
+)
 
 type bucket struct {
 	tokens float64
 	last   time.Time
+}
+
+type shard struct {
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	lastSweep time.Time
 }
 
 // Limiter is a set of token buckets keyed by client identity. Each bucket
@@ -24,9 +37,8 @@ type Limiter struct {
 	burst float64
 	now   func() time.Time
 
-	mu        sync.Mutex
-	buckets   map[string]*bucket
-	lastSweep time.Time
+	seed   maphash.Seed
+	shards [shardCount]shard
 }
 
 // New returns a Limiter. now supplies the current time; pass nil for
@@ -35,28 +47,34 @@ func New(requestsPerSecond float64, burst int, now func() time.Time) *Limiter {
 	if now == nil {
 		now = time.Now
 	}
-	return &Limiter{
-		rate:      requestsPerSecond,
-		burst:     float64(burst),
-		now:       now,
-		buckets:   make(map[string]*bucket),
-		lastSweep: now(),
+	l := &Limiter{
+		rate:  requestsPerSecond,
+		burst: float64(burst),
+		now:   now,
+		seed:  maphash.MakeSeed(),
 	}
+	start := now()
+	for i := range l.shards {
+		l.shards[i].buckets = make(map[string]*bucket)
+		l.shards[i].lastSweep = start
+	}
+	return l
 }
 
 // Allow takes one token from key's bucket. When none is available it returns
 // false and how long the caller should wait before a token will be.
 func (l *Limiter) Allow(key string) (ok bool, retryAfter time.Duration) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s := &l.shards[maphash.String(l.seed, key)%shardCount]
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	t := l.now()
-	l.sweep(t)
+	l.sweep(s, t)
 
-	b, found := l.buckets[key]
+	b, found := s.buckets[key]
 	if !found {
 		b = &bucket{tokens: l.burst, last: t}
-		l.buckets[key] = b
+		s.buckets[key] = b
 	} else {
 		b.tokens = l.refilled(b, t)
 		b.last = t
@@ -78,17 +96,18 @@ func (l *Limiter) refilled(b *bucket, t time.Time) float64 {
 	return math.Min(l.burst, b.tokens+elapsed*l.rate)
 }
 
-// sweep drops buckets that have been idle long enough to be full again, since
-// a fresh bucket is equivalent. It bounds memory by the number of recently
-// active clients. Callers must hold l.mu.
-func (l *Limiter) sweep(t time.Time) {
-	if t.Sub(l.lastSweep) < sweepInterval {
+// sweep drops a shard's buckets that have been idle long enough to be full
+// again, since a fresh bucket is equivalent. Each shard sweeps itself, at
+// most once per sweepInterval, on its next Allow. This bounds memory by the
+// number of recently active clients. Callers must hold s.mu.
+func (l *Limiter) sweep(s *shard, t time.Time) {
+	if t.Sub(s.lastSweep) < sweepInterval {
 		return
 	}
-	l.lastSweep = t
-	for k, b := range l.buckets {
+	s.lastSweep = t
+	for k, b := range s.buckets {
 		if l.refilled(b, t) >= l.burst {
-			delete(l.buckets, k)
+			delete(s.buckets, k)
 		}
 	}
 }

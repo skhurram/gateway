@@ -25,6 +25,11 @@ Use a token bucket per client IP, configured per route with
 - Buckets that have been idle long enough to be full again are swept once a
   minute, since a fresh bucket is equivalent. Memory is bounded by recently
   active clients.
+- Buckets are split across 64 shards by a hash of the client key, each with
+  its own lock, and each shard sweeps itself. Unrelated clients rarely
+  contend, and a sweep pauses only one shard's clients. With 200,000 clients
+  on 8 CPUs, the worst pause dropped from about 25 ms to under 1 ms (issue
+  #2, `BenchmarkSweepPause`).
 
 ## Alternatives considered
 
