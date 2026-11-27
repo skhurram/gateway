@@ -154,8 +154,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// cannot be matched as /a but resolved as /b by the upstream.
 	if p := cleanPath(req.URL.Path); p != req.URL.Path {
 		req = req.Clone(req.Context())
+		req.URL.RawPath = cleanRawPath(req.URL.RawPath, p)
 		req.URL.Path = p
-		req.URL.RawPath = ""
 	}
 	for _, rt := range r.routes {
 		if matchPrefix(rt.prefix, req.URL.Path) {
@@ -174,6 +174,21 @@ func matchPrefix(prefix, p string) bool {
 		return true
 	}
 	return p == prefix || strings.HasPrefix(p, prefix+"/")
+}
+
+// cleanRawPath cleans the client's escaped path the same way, so encoded
+// characters such as %2F survive cleaning. It returns "" (forward the plain
+// cleaned path) unless the cleaned escaped path decodes to exactly cleaned;
+// that rejects inputs such as %2E%2E, which only become ".." after decoding.
+func cleanRawPath(raw, cleaned string) string {
+	if raw == "" {
+		return ""
+	}
+	c := cleanPath(raw)
+	if decoded, err := url.PathUnescape(c); err != nil || decoded != cleaned {
+		return ""
+	}
+	return c
 }
 
 func cleanPath(p string) string {
