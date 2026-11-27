@@ -3,6 +3,7 @@ package proxy
 
 import (
 	"context"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -45,6 +46,7 @@ func NewTransport() *http.Transport {
 // once the transport has recorded an outcome for it.
 type attempt struct {
 	u       *balancer.Upstream
+	rc      *http.ResponseController
 	settled bool
 }
 
@@ -73,7 +75,8 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 			r.SetURL(attemptFrom(r.In.Context()).u.URL)
 			r.SetXForwarded()
 		},
-		Transport: breakerTransport{next: rt},
+		Transport:      breakerTransport{next: rt},
+		ModifyResponse: liftStreamDeadlines,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		},
@@ -84,7 +87,7 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
-		a := &attempt{u: u}
+		a := &attempt{u: u, rc: http.NewResponseController(w)}
 		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), attemptKey{}, a)))
 		// If the transport never reported an outcome, return any half-open
 		// trial reserved by Next so the breaker cannot get stuck.
@@ -92,6 +95,25 @@ func NewBalanced(b balancer.Balancer, rt http.RoundTripper) http.Handler {
 			u.Release()
 		}
 	})
+}
+
+// liftStreamDeadlines removes the server's read and write deadlines for a
+// server-sent event stream, which is meant to stay open far longer than the
+// server timeouts allow. The response header has already arrived, so the
+// upstream is answering; the stream then ends when either side closes it.
+// Upgraded connections (WebSocket) need no help: the server clears deadlines
+// when the reverse proxy hijacks the connection.
+func liftStreamDeadlines(resp *http.Response) error {
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		return nil
+	}
+	a := attemptFrom(resp.Request.Context())
+	// ErrNotSupported only means a wrapper hides the connection; the stream
+	// then keeps the normal timeouts.
+	_ = a.rc.SetWriteDeadline(time.Time{})
+	_ = a.rc.SetReadDeadline(time.Time{})
+	return nil
 }
 
 type breakerTransport struct {
@@ -119,14 +141,28 @@ func (t breakerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// serverTimeouts are the client -> gateway timeouts; tests shorten them.
+type serverTimeouts struct {
+	readHeader, read, write, idle time.Duration
+}
+
 // NewServer returns an http.Server with timeouts set.
 func NewServer(addr string, h http.Handler) *http.Server {
+	return newServer(addr, h, serverTimeouts{
+		readHeader: readHeaderTimeout,
+		read:       readTimeout,
+		write:      writeTimeout,
+		idle:       idleTimeout,
+	})
+}
+
+func newServer(addr string, h http.Handler, t serverTimeouts) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
+		ReadHeaderTimeout: t.readHeader,
+		ReadTimeout:       t.read,
+		WriteTimeout:      t.write,
+		IdleTimeout:       t.idle,
 	}
 }
