@@ -75,7 +75,8 @@ func TestParseInvalid(t *testing.T) {
 		name, yaml, wantErr string
 	}{
 		{"empty", ``, "empty"},
-		{"no routes", `listen: ":1"`, "at least one route"},
+		{"no routes key", `listen: ":1"`, "routes is required"},
+		{"null routes", "routes:", "routes is required"},
 		{"bad prefix", "routes:\n  - prefix: api\n    upstreams: [http://a:1]", "must start with /"},
 		{"duplicate prefix", "routes:\n  - {prefix: /a, upstreams: [http://a:1]}\n  - {prefix: /a/, upstreams: [http://b:1]}", "duplicate"},
 		{"no upstreams", "routes:\n  - prefix: /a", "at least one upstream"},
@@ -122,5 +123,15 @@ func TestLoad(t *testing.T) {
 	}
 	if _, err := config.Load(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
 		t.Error("expected error for missing file")
+	}
+}
+
+func TestParseEmptyRouteTable(t *testing.T) {
+	c, err := config.Parse([]byte("routes: []"))
+	if err != nil {
+		t.Fatalf("explicit empty table rejected: %v", err)
+	}
+	if len(c.Routes) != 0 {
+		t.Fatalf("routes = %d, want 0", len(c.Routes))
 	}
 }
