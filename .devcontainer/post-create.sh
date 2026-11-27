@@ -25,8 +25,12 @@ sudo chmod +x /usr/local/bin/kubebuilder
 
 echo "==> Installing system packages"
 sudo apt-get update
-sudo apt-get install -y --no-install-recommends redis-tools jq python3
+sudo apt-get install -y --no-install-recommends redis-tools jq python3 npm
 sudo rm -rf /var/lib/apt/lists/*
+
+echo "==> Installing Claude CLI"
+sudo npm install -g @anthropic-ai/claude-code-linux-x64
+sudo ln -sf /usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-x64/claude /usr/local/bin/claude
 
 echo "==> Downloading Go modules"
 if [ -f go.mod ]; then
@@ -42,6 +46,7 @@ helm version --short
 terraform version | head -n 1
 golangci-lint --version
 kubebuilder version || true
+claude --version
 
 cat <<'EOF'
 
