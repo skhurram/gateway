@@ -92,7 +92,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "gateway.configMapName" . }}
+            name: {{ include "gateway.mountedConfigMapName" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
