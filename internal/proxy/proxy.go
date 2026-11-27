@@ -111,12 +111,27 @@ func (t breakerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		return nil, err
 	}
-	if resp.StatusCode >= http.StatusInternalServerError {
+	if upstreamFailed(resp.StatusCode) {
 		a.u.RecordFailure()
 	} else {
 		a.u.RecordSuccess()
 	}
 	return resp, nil
+}
+
+// upstreamFailed reports whether a response status means the upstream itself
+// failed or is unavailable, which counts against its circuit breaker. Other
+// 5xx statuses (501, 505, and the rest) describe the request or a
+// configuration problem: the upstream answered, so they count as success, as
+// 4xx responses do. See docs/decisions/005-breaker-failure-statuses.md.
+func upstreamFailed(status int) bool {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewServer returns an http.Server with timeouts set.

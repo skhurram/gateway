@@ -112,8 +112,10 @@ circuit_breaker:   # optional, these are the defaults
 - Upstreams are served round-robin. One that fails its health check (non-2xx
   or unreachable) leaves the rotation until it passes again. With none
   healthy the gateway returns `503`.
-- Connection errors, timeouts, and 5xx responses open an upstream's circuit
-  after the configured consecutive failure threshold. Open circuits are
+- Connection errors, timeouts, and `500`, `502`, `503` or `504` responses open
+  an upstream's circuit after the configured consecutive failure threshold.
+  Other 5xx statuses, such as `501`, describe the request, not the upstream,
+  and do not count. Open circuits are
   skipped; after the timeout, limited trial traffic tests recovery.
 - Over-limit requests get `429` with a `Retry-After` header. Limits are per
   client IP and per route.
@@ -126,6 +128,7 @@ Short notes on the choices that matter, each with the alternatives I considered.
 - [002: Health checks, active versus passive](docs/decisions/002-health-checks.md)
 - [003: ConfigMap aggregation for Routes](docs/decisions/003-controller.md)
 - [004: Passive circuit breaking](docs/decisions/004-circuit-breaker.md)
+- [005: Which responses count as breaker failures](docs/decisions/005-breaker-failure-statuses.md)
 
 ## Kubernetes
 
