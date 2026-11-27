@@ -65,6 +65,7 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 	var configMapName string
 	var configMapKey string
+	var baseConfigMapName string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -88,6 +89,9 @@ func main() {
 		"Name of the ConfigMap containing the aggregated gateway config.")
 	flag.StringVar(&configMapKey, "config-map-key", "gateway.yaml",
 		"Key in the aggregated gateway ConfigMap.")
+	flag.StringVar(&baseConfigMapName, "base-config-map-name", "",
+		"Name of a ConfigMap, written by someone else (the Helm chart), whose key holds the base gateway "+
+			"config. When set, Routes are merged into it and the result is written to --config-map-name.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -195,8 +199,9 @@ func main() {
 		Recorder: func(object runtime.Object, eventtype, reason, messageFmt string, args ...any) {
 			kubeRecorder.Eventf(object, nil, eventtype, reason, "Reconcile", messageFmt, args...)
 		},
-		ConfigMapName: configMapName,
-		ConfigMapKey:  configMapKey,
+		ConfigMapName:     configMapName,
+		ConfigMapKey:      configMapKey,
+		BaseConfigMapName: baseConfigMapName,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "route")
 		os.Exit(1)

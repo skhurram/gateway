@@ -30,7 +30,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	gatewayv1alpha1 "gateway/controller/api/v1alpha1"
 )
@@ -47,11 +51,18 @@ type eventRecorder func(runtime.Object, string, string, string, ...any)
 // RouteReconciler reconciles a Route object
 type RouteReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	Recorder      eventRecorder
+	Scheme   *runtime.Scheme
+	Recorder eventRecorder
+	// ConfigMapName is the ConfigMap the controller writes and the gateway
+	// mounts. With a base ConfigMap set, this is the merged output.
 	ConfigMapName string
 	ConfigMapKey  string
-	RenderOptions RenderOptions
+	// BaseConfigMapName, when set, names a ConfigMap owned by someone else (the
+	// Helm chart) whose ConfigMapKey holds the base gateway config. The
+	// controller only reads it, merges Route routes into it, and writes the
+	// result to ConfigMapName. RenderOptions are not used in this mode.
+	BaseConfigMapName string
+	RenderOptions     RenderOptions
 }
 
 // +kubebuilder:rbac:groups=gateway.gateway.local,resources=routes,verbs=get;list;watch
@@ -65,12 +76,33 @@ func (r *RouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.List(ctx, &routeList, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list routes: %w", err)
 	}
-	rendered, conflicts, err := Render(routeList.Items, r.RenderOptions)
+	var (
+		rendered  []byte
+		conflicts []Conflict
+		owner     *corev1.ConfigMap
+		err       error
+	)
+	if r.BaseConfigMapName == "" {
+		rendered, conflicts, err = Render(routeList.Items, r.RenderOptions)
+	} else {
+		owner, err = r.getBase(ctx, req.Namespace)
+		if owner == nil && err == nil {
+			// No base here yet (first install, or a namespace without a
+			// gateway). The base watch reconciles again once it exists.
+			logf.FromContext(ctx).Info("base ConfigMap not found; not writing gateway config",
+				"namespace", req.Namespace, "name", r.BaseConfigMapName)
+			return ctrl.Result{}, nil
+		}
+		if err == nil {
+			rendered, conflicts, err = Merge([]byte(owner.Data[r.configMapKey()]), routeList.Items,
+				req.Namespace+"/"+r.BaseConfigMapName)
+		}
+	}
 	if err != nil {
 		r.recordRenderErrors(&routeList, err)
 		return ctrl.Result{}, err
 	}
-	if err := r.writeConfigMap(ctx, req.Namespace, rendered); err != nil {
+	if err := r.writeConfigMap(ctx, req.Namespace, rendered, owner); err != nil {
 		r.recordRenderErrors(&routeList, err)
 		return ctrl.Result{}, err
 	}
@@ -80,15 +112,48 @@ func (r *RouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	return ctrl.Result{}, nil
 }
 
-func (r *RouteReconciler) writeConfigMap(ctx context.Context, namespace string, rendered []byte) error {
-	name := r.ConfigMapName
-	if name == "" {
-		name = defaultConfigMapName
+// getBase returns the base ConfigMap, or nil without an error when it does
+// not exist.
+func (r *RouteReconciler) getBase(ctx context.Context, namespace string) (*corev1.ConfigMap, error) {
+	var base corev1.ConfigMap
+	key := client.ObjectKey{Namespace: namespace, Name: r.BaseConfigMapName}
+	if err := r.Get(ctx, key, &base); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get base ConfigMap %s: %w", key, err)
 	}
-	key := r.ConfigMapKey
-	if key == "" {
-		key = defaultConfigMapKey
+	if _, ok := base.Data[r.configMapKey()]; !ok {
+		return nil, fmt.Errorf("base ConfigMap %s has no key %q", key, r.configMapKey())
 	}
+	return &base, nil
+}
+
+func (r *RouteReconciler) configMapName() string {
+	if r.ConfigMapName == "" {
+		return defaultConfigMapName
+	}
+	return r.ConfigMapName
+}
+
+func (r *RouteReconciler) configMapKey() string {
+	if r.ConfigMapKey == "" {
+		return defaultConfigMapKey
+	}
+	return r.ConfigMapKey
+}
+
+// writeConfigMap writes rendered to the output ConfigMap. A non-nil owner (the
+// base ConfigMap) becomes an owner reference, so deleting the base, for example
+// with helm uninstall, garbage-collects the output.
+func (r *RouteReconciler) writeConfigMap(
+	ctx context.Context,
+	namespace string,
+	rendered []byte,
+	owner *corev1.ConfigMap,
+) error {
+	name := r.configMapName()
+	key := r.configMapKey()
 
 	var cm corev1.ConfigMap
 	keyObject := client.ObjectKey{Namespace: namespace, Name: name}
@@ -103,6 +168,11 @@ func (r *RouteReconciler) writeConfigMap(ctx context.Context, namespace string, 
 			},
 			Data: map[string]string{key: string(rendered)},
 		}
+		if owner != nil {
+			if err := controllerutil.SetOwnerReference(owner, &cm, r.Scheme); err != nil {
+				return fmt.Errorf("set owner of ConfigMap %s: %w", keyObject, err)
+			}
+		}
 		if err := r.Create(ctx, &cm); err != nil {
 			return fmt.Errorf("create ConfigMap %s: %w", keyObject, err)
 		}
@@ -110,7 +180,14 @@ func (r *RouteReconciler) writeConfigMap(ctx context.Context, namespace string, 
 	case err != nil:
 		return fmt.Errorf("get ConfigMap %s: %w", keyObject, err)
 	}
-	if cm.Data != nil && cm.Data[key] == string(rendered) {
+	ownersBefore := len(cm.OwnerReferences)
+	if owner != nil {
+		if err := controllerutil.SetOwnerReference(owner, &cm, r.Scheme); err != nil {
+			return fmt.Errorf("set owner of ConfigMap %s: %w", keyObject, err)
+		}
+	}
+	ownerChanged := len(cm.OwnerReferences) != ownersBefore
+	if cm.Data != nil && cm.Data[key] == string(rendered) && !ownerChanged {
 		return nil
 	}
 	if cm.Data == nil {
@@ -197,10 +274,26 @@ func (r *RouteReconciler) recordRenderErrors(routes *gatewayv1alpha1.RouteList, 
 	}
 }
 
+// configMapRequests maps events on the base or output ConfigMap to a
+// reconcile of their namespace, so a helm upgrade that re-renders the base, or
+// an edit to the output, is reconciled without waiting for a Route change.
+func (r *RouteReconciler) configMapRequests(_ context.Context, obj client.Object) []reconcile.Request {
+	if r.BaseConfigMapName == "" {
+		return nil
+	}
+	if name := obj.GetName(); name != r.BaseConfigMapName && name != r.configMapName() {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(obj)}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *RouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1alpha1.Route{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Named("route").
-		Complete(r)
+		Named("route")
+	if r.BaseConfigMapName != "" {
+		b = b.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.configMapRequests))
+	}
+	return b.Complete(r)
 }

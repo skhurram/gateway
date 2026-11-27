@@ -43,7 +43,8 @@ flowchart LR
     OTEL -->|metrics| P[Prometheus endpoint]
 ```
 
-The `Route` controller aggregates resources into the gateway ConfigMap. Mounted
+The `Route` controller merges Route resources into the chart's config and writes
+the result to the ConfigMap the gateway mounts. Mounted
 ConfigMap updates can take up to about a minute to reach each pod; the gateway
 then validates and atomically applies the new runtime.
 
@@ -140,15 +141,19 @@ gateway with:
   failures open the circuit before the next active health probe, and a bounded
   half-open trial set tests recovery. Breakers reset when the gateway runtime
   is reloaded. See [decision 004](docs/decisions/004-circuit-breaker.md).
-- **Config.** The gateway config lives in a ConfigMap (`values.yaml`, key
-  `config`). A checksum annotation rolls the pods for Helm-rendered config
-  changes. Controller-written changes are picked up live from the mounted
-  directory. Invalid updates leave the last good router and health checker in
+- **Config.** The chart renders `values.yaml` key `config` into a ConfigMap. A
+  checksum annotation rolls the pods for Helm-rendered config changes. With the
+  controller enabled, the pods mount the controller's `<name>-merged`
+  ConfigMap instead, and controller-written changes are picked up live from
+  the mounted directory. Invalid updates leave the last good router and health checker in
   place.
 - **Route controller.** The chart installs the `Route` CRD, controller
-  Deployment, ServiceAccount and RBAC. The controller lists all Routes in a
-  namespace and writes one deterministic ConfigMap entry. `Ready` and
-  `Conflict` conditions show which Routes are active. See
+  Deployment, ServiceAccount and RBAC. The controller reads the chart's
+  ConfigMap without writing it, adds all Routes in the namespace, and writes
+  one deterministic `<name>-merged` ConfigMap. Chart settings and routes are
+  kept; a Route that claims a chart route's prefix gets a `Conflict`. A
+  `helm upgrade` triggers a re-merge. `Ready` and `Conflict` conditions show
+  which Routes are active. See
   [decision 003](docs/decisions/003-controller.md).
 - **Hardening.** Non-root user, read-only root filesystem, all capabilities
   dropped, `RuntimeDefault` seccomp, no service account token. The image is
@@ -394,10 +399,6 @@ the mechanism works, not as a capacity claim.
 - Rate limiting is keyed on the connection's peer address. Behind an ingress or
   load balancer, all clients share one bucket until trusted-proxy handling
   lands ([issue #9](https://github.com/skhurram/gateway/issues/9)).
-- The `Route` controller and the Helm chart write the same ConfigMap. A
-  `helm upgrade` replaces Route-generated routes with the chart's values, and
-  the controller does not reconcile until the next Route change. Once any Route
-  exists, routes declared in the chart values are dropped.
 - Open issues and known findings are listed in the
   [issue tracker](https://github.com/skhurram/gateway/issues).
 

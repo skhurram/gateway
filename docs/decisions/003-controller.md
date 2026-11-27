@@ -46,6 +46,17 @@ prefixes, the oldest Route wins and the other Routes receive a `Conflict`
 condition plus a warning event. The winner is determined before rendering, so
 the same Kubernetes input always produces byte-identical YAML.
 
+Each ConfigMap has one writer. The Helm chart owns the base ConfigMap rendered
+from `values.config`. The controller only reads it, merges the Routes into it,
+and writes a separate `<name>-merged` ConfigMap that the gateway pods mount.
+Every base setting is kept. Base routes keep their prefixes, and a Route that
+claims one gets a `Conflict` condition, because the chart is the operator's
+configuration. The controller watches the base, so a `helm upgrade` causes a
+re-merge instead of dropping the Route routes. The merged ConfigMap has an
+owner reference to the base, so uninstalling the chart removes it. Without a
+base, the controller writes nothing in that namespace. (An earlier version had
+both write the same key, which let each overwrite the other: issue #10.)
+
 Reconciliation always rebuilds the whole ConfigMap. Deleting a Route therefore
 requires no finalizer: the next reconciliation renders the remaining Routes
 and removes the deleted entry.

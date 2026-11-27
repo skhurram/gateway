@@ -12,6 +12,11 @@ controller:
     repository: edge-gateway-controller
     tag: ""
     pullPolicy: IfNotPresent
+  # Name of the chart-owned ConfigMap rendered from `config` (defaults to the
+  # release fullname). With the controller enabled, the controller reads it,
+  # merges Route routes into it, and writes "<name>-merged", which the gateway
+  # pods mount. A Route whose prefix matches a route in `config` is reported as
+  # a conflict, and the route from `config` is kept.
   configMapName: ""
   configMapKey: gateway.yaml
   resources:
