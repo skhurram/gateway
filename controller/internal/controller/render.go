@@ -36,7 +36,7 @@ type Conflict struct {
 type renderedConfig struct {
 	Listen string          `yaml:"listen"`
 	Health renderedHealth  `yaml:"health"`
-	Routes []renderedRoute `yaml:"routes,omitempty"`
+	Routes []renderedRoute `yaml:"routes"`
 }
 
 type renderedHealth struct {

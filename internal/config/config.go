@@ -85,11 +85,29 @@ func Parse(data []byte) (*Config, error) {
 		}
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := requireRoutesKey(data); err != nil {
+		return nil, err
+	}
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// requireRoutesKey rejects documents that omit routes, so an empty or
+// misspelled file cannot silently answer 404 to every request. An explicit
+// empty table (routes: []) is valid: it is how the Route controller says that
+// no Route exists any more.
+func requireRoutesKey(data []byte) error {
+	var keys map[string]any
+	if err := yaml.Unmarshal(data, &keys); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	if _, ok := keys["routes"].([]any); !ok {
+		return errors.New("routes is required; use routes: [] for an empty table")
+	}
+	return nil
 }
 
 // Single returns a validated config with one catch-all route to upstream. It
@@ -165,9 +183,6 @@ func (c *Config) validate() error {
 		c.CircuitBreaker.OpenTimeout <= 0 ||
 		c.CircuitBreaker.HalfOpenRequests < 1 {
 		return errors.New("circuit_breaker: failure_threshold, open_timeout, and half_open_requests must be positive")
-	}
-	if len(c.Routes) == 0 {
-		return errors.New("at least one route is required")
 	}
 	seen := make(map[string]bool, len(c.Routes))
 	for i, r := range c.Routes {

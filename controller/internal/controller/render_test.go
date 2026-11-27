@@ -3,6 +3,7 @@ package controller
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,4 +117,16 @@ func indexFrom(value, substring string, offset int) int {
 		}
 	}
 	return -1
+}
+
+// An empty Route list must render an explicit empty table. Omitting the key
+// would make the gateway reject the file and keep serving the deleted route.
+func TestRenderEmptyWritesExplicitTable(t *testing.T) {
+	data, _, err := Render(nil, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "routes: []") {
+		t.Fatalf("rendered config lacks an explicit empty table:\n%s", data)
+	}
 }
