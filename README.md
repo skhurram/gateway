@@ -117,6 +117,12 @@ circuit_breaker:   # optional, these are the defaults
   skipped; after the timeout, limited trial traffic tests recovery.
 - Over-limit requests get `429` with a `Retry-After` header. Limits are per
   client IP and per route.
+- Client connections have a 30s read and 60s write timeout, and the upstream
+  has 30s to send response headers. Server-sent event streams
+  (`text/event-stream`) are exempt from the read and write timeouts once the
+  upstream answers, and upgraded connections (WebSocket) are not subject to
+  them. Other long responses, such as a large download over a slow client,
+  are still cut off at 60s.
 
 ## Design decisions
 
