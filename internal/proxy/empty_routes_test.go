@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gateway/internal/config"
 	"gateway/internal/proxy"
+	"gateway/pkg/config"
 )
 
 // With no routes, every request is 404 and the gateway is not ready. This is

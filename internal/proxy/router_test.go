@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"gateway/internal/config"
 	"gateway/internal/proxy"
+	"gateway/pkg/config"
 )
 
 // namedUpstream replies with "<name> <path>" so tests can see both which

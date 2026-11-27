@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"gateway/internal/config"
 	"gateway/internal/proxy"
+	"gateway/pkg/config"
 )
 
 func TestRuntimeManagerReloadKeepsOldRuntimeOnInvalidConfig(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gateway/internal/config"
 	"gateway/internal/proxy"
+	"gateway/pkg/config"
 )
 
 // BenchmarkProxy measures the full gateway path (route match, balancer,

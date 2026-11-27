@@ -16,8 +16,8 @@ import (
 
 	"gateway/internal/balancer"
 	"gateway/internal/breaker"
-	"gateway/internal/config"
 	"gateway/internal/ratelimit"
+	"gateway/pkg/config"
 )
 
 type route struct {

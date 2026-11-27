@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gateway/internal/config"
+	"gateway/pkg/config"
 )
 
 func TestParseValid(t *testing.T) {
