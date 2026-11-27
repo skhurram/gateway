@@ -146,6 +146,26 @@ func (b *Breaker) Release() {
 	}
 }
 
+// Admits reports whether Allow would admit a request now, without reserving a
+// trial or changing state. An open breaker past its timeout admits (Allow
+// would move it to half-open); a half-open breaker admits only while it has a
+// free trial slot.
+func (b *Breaker) Admits() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	switch b.state {
+	case Closed:
+		return true
+	case Open:
+		return b.now().Sub(b.openedAt) >= b.openTimeout
+	case HalfOpen:
+		return b.halfOpenTrials < b.halfOpenRequests
+	default:
+		return false
+	}
+}
+
 // State returns the current breaker state. An open breaker becomes half-open
 // only when Allow admits the first trial request after its timeout.
 func (b *Breaker) State() State {

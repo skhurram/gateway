@@ -19,8 +19,10 @@ The gateway also runs one probe round **before it starts listening**, so
 `/readyz` reflects real upstream state from the first request instead of an
 optimistic default.
 
-`/readyz` is `200` only while at least one upstream is healthy and the process
-is not draining. `/healthz` only says the process is alive. They are separate
+`/readyz` is `200` only while at least one upstream can take a request and the
+process is not draining. An upstream can take a request when it is healthy and
+its circuit breaker would admit one: the breaker is closed, open past its
+timeout (the next request is a trial), or half-open with a free trial slot. `/healthz` only says the process is alive. They are separate
 because the cost of getting them wrong differs:
 
 - A failing liveness probe restarts the pod. Tying it to upstream health would

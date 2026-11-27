@@ -142,3 +142,33 @@ func TestRoundRobinSkipsOpenBreaker(t *testing.T) {
 		}
 	}
 }
+
+func TestAvailableNeedsHealthAndAFreeBreakerSlot(t *testing.T) {
+	u := balancer.NewUpstream(&url.URL{Scheme: "http", Host: "a"})
+	if !u.Available() {
+		t.Fatal("healthy upstream without a breaker should be available")
+	}
+	now := time.Unix(1_700_000_000, 0)
+	b, err := breaker.New(breaker.Config{FailureThreshold: 1, OpenTimeout: time.Minute, HalfOpenRequests: 1},
+		func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.SetBreaker(b)
+	u.RecordFailure()
+	now = now.Add(time.Minute)
+	if !u.Acquire() { // half-open, only trial taken
+		t.Fatal("first trial should be admitted")
+	}
+	if u.Available() {
+		t.Fatal("half-open upstream with no free trial slot should not be available")
+	}
+	u.Release()
+	if !u.Available() {
+		t.Fatal("upstream should be available again once the trial is released")
+	}
+	u.SetHealthy(false)
+	if u.Available() {
+		t.Fatal("unhealthy upstream should not be available")
+	}
+}

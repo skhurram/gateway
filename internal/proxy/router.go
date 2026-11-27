@@ -138,10 +138,11 @@ func (r *Router) ObserveBreakerStates(o metric.Int64Observer) {
 // Upstreams returns every upstream across all routes, for health checking.
 func (r *Router) Upstreams() []*balancer.Upstream { return r.upstreams }
 
-// Ready reports whether at least one upstream is healthy.
+// Ready reports whether at least one upstream can take a request now: it is
+// healthy and its breaker would admit one (see Upstream.Available).
 func (r *Router) Ready() bool {
 	for _, u := range r.upstreams {
-		if u.Healthy() && u.BreakerState() != breaker.Open {
+		if u.Available() {
 			return true
 		}
 	}
