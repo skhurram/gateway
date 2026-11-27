@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"gateway/internal/breaker"
 	"gateway/internal/proxy"
 )
 
@@ -60,5 +62,36 @@ func TestRouterReady(t *testing.T) {
 	ups[1].SetHealthy(false)
 	if r.Ready() {
 		t.Error("router with no healthy upstream must not be ready")
+	}
+}
+
+// A half-open upstream whose trial slots are all taken refuses traffic, so it
+// must not make the router ready (B9).
+func TestRouterNotReadyWhenHalfOpenTrialsAreTaken(t *testing.T) {
+	r, err := proxy.NewRouter(twoUpstreamConfig(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ups := r.Upstreams()
+	ups[1].SetHealthy(false)
+
+	now := time.Unix(1_700_000_000, 0)
+	b, err := breaker.New(breaker.Config{FailureThreshold: 1, OpenTimeout: time.Minute, HalfOpenRequests: 1},
+		func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ups[0].SetBreaker(b)
+	ups[0].RecordFailure()
+	now = now.Add(time.Minute)
+	if !ups[0].Acquire() {
+		t.Fatal("first half-open trial should be admitted")
+	}
+	if r.Ready() {
+		t.Fatal("router must not be ready when its only healthy upstream has no free trial slot")
+	}
+	ups[0].Release()
+	if !r.Ready() {
+		t.Fatal("router should be ready once the trial slot is free again")
 	}
 }

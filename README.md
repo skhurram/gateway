@@ -133,8 +133,9 @@ The Helm chart in [deploy/helm/gateway](deploy/helm/gateway) deploys the
 gateway with:
 
 - **Probes.** Liveness hits `/healthz` (the process is alive). Readiness hits
-  `/readyz`, which is `200` only while at least one upstream is healthy and the
-  pod is not shutting down. Liveness deliberately ignores upstream health, so a
+  `/readyz`, which is `200` only while at least one upstream can take a request
+  (healthy, and its circuit breaker would admit one) and the pod is not
+  shutting down. Liveness deliberately ignores upstream health, so a
   backend outage does not restart the gateway. See
   [decision 002](docs/decisions/002-health-checks.md).
 - **Circuit breaking.** Each upstream has an independent breaker. Request

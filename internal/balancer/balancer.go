@@ -66,6 +66,15 @@ func (u *Upstream) Release() {
 	}
 }
 
+// Available reports whether Acquire would succeed now, without reserving
+// anything: the upstream is healthy and its breaker would admit a request.
+func (u *Upstream) Available() bool {
+	if !u.Healthy() {
+		return false
+	}
+	return u.breaker == nil || u.breaker.Admits()
+}
+
 // BreakerState returns the upstream's passive circuit state.
 func (u *Upstream) BreakerState() breaker.State {
 	if u.breaker == nil {
