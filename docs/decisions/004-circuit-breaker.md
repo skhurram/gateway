@@ -9,7 +9,8 @@ capacity and increase client latency.
 ## Decision
 
 Each upstream gets a circuit breaker. Connection errors, timeouts, and 5xx
-responses count as failures; 4xx responses do not. After the configured number
+responses count as failures; 4xx responses do not. (Decision 005 narrows the
+5xx part to 500, 502, 503 and 504.) After the configured number
 of consecutive failures, the balancer stops selecting that upstream. After the
 open timeout, a limited number of trial requests test recovery. Any failed
 trial reopens the breaker; all successful trials close it.
