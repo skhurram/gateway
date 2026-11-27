@@ -152,7 +152,7 @@ gateway with:
   [decision 003](docs/decisions/003-controller.md).
 - **Hardening.** Non-root user, read-only root filesystem, all capabilities
   dropped, `RuntimeDefault` seccomp, no service account token. The image is
-  distroless and multi-stage built (`docker build .`): **31 MB**, runs as
+  distroless and multi-stage built (`docker build .`): **31 MB** as Docker reports it (7.1 MB compressed), runs as
   uid 65532.
 - **Availability.** A CPU-based HorizontalPodAutoscaler (2 to 5 replicas), a
   PodDisruptionBudget (`minAvailable: 1`), pods spread across nodes, and a
@@ -312,28 +312,32 @@ session if the generated URL is private.
 
 ### Killing an upstream
 
-Load of 50 requests/s on `/api/users`, then `kubectl scale deploy/echo-users
+Load of 50 requests/s on `/api/users` (one worker at 50 qps), then `kubectl scale deploy/echo-users
 --replicas=0`, then back to 2. Values are summed over the 2 gateway pods from
 the collector's `/metrics`; counters are cumulative since the pods started.
 
 | Time | `gateway_upstreams_healthy` (`/api/users`) | Requests | 5xx |
 |---|---|---|---|
-| 14s, baseline | 2 | 3355 | 1156 |
-| 26s, upstream down | **0** | 4206 | 1600 |
-| 36s, upstream down | **0** | 4706 | 2100 |
-| 50s, scaled back up | 2 | 5206 | 2420 |
-| 62s, recovered | 2 | 5806 | 2420 |
+| 14s, baseline | 2 | 22530 | 6876 |
+| 36s, upstream down | **0** | 23531 | 7088 |
+| 62s, recovered | 2 | 25029 | 8187 |
 
-The baseline 5xx came from an earlier outage test on the same pods. What
-matters is the change: while the upstream is down the gauge is `0` and 5xx
-grows by about 500 per 10s (the whole load), and once it recovers the gauge is
-back to `2` and 5xx stops growing. The load generator saw 2187 `200`, 22 `502`
-(requests that raced the health check) and 1242 `503`. `/readyz` stayed `200`
-throughout, because the `/api/orders` upstream was still healthy.
+Each gateway pod exports its gauge every 10 seconds, so a sample can lag the
+health check by up to one export interval. Sampling each pod every 4 seconds in
+a separate run, the gauge reached `0` 5 to 9 seconds after the scale-down, and
+returned to `1` on each pod 9 to 13 seconds after the scale-up.
 
-The rate limiter is visible the same way. A burst against `/api/orders`
-(limit 200 rps, burst 400) returned 2392 `200` and 2530 `429`, and
-`gateway_ratelimited_total` summed over the pods was 1299 + 1231 = 2530.
+The load generator sent 50 requests/s for 75 seconds and saw 2438 `200`, 5
+`502` (requests that raced the health check) and 1306 `503`. The 5xx counter
+rose by about 1100 between 36s and 62s, which covers the outage, so most of the
+load failed while the upstream was down. Requests and 5xx are counters since the
+gateway pods started, so compare the rows rather than the absolute values.
+
+The rate limiter is visible the same way. A burst of 6000 requests against
+`/api/orders` (limit 200 rps and burst 400 per pod, 20 concurrent connections)
+returned 2250 `200` and 3750 `429`. The `gateway_ratelimited_total` counter for
+that route rose by 3750 over the same run. The limit applies per pod, so with
+two pods the burst allowance is roughly doubled.
 
 *Screenshots are not included; the output tables come from a live cluster.
 The most important visual for tracing is the Jaeger request trace, and the
@@ -346,10 +350,11 @@ Prometheus endpoint provides the metric evidence.*
 
 | Benchmark | Result |
 |---|---|
-| `BenchmarkProxy` (route match, balancer, reverse proxy, loopback upstream, parallel) | ~47 µs/op, 46 KB/op, 104 allocs/op |
+| `BenchmarkProxy` (route match, balancer, reverse proxy, loopback upstream, parallel) | ~93 µs/op (five runs: 87 to 102), 46.5 KB/op, 111 allocs/op |
 
-Measured on an Intel i7-4770HQ (8 threads), macOS, Go 1.27. The benchmark
-calls the handler directly, so it excludes the client-to-gateway network hop.
+Measured on an Intel i7-4770HQ (8 threads), macOS (darwin/amd64), Go 1.27.4,
+with `-count 5`. The benchmark calls the handler directly, so it excludes the
+client-to-gateway network hop.
 
 ### Zero-downtime rollout
 
@@ -361,13 +366,14 @@ rolling restart, and fails on any non-200 response or transport error. It uses
 |---|---|
 | Load | 10 workers x 10 qps for 60s against `/api/users/...` via `localhost:8080` |
 | Event | `kubectl rollout restart deployment/gateway` 5s in (2 replicas, `maxUnavailable: 0`) |
-| Result | **5,993 requests, all `200`, 0 errors** |
-| Latency | p50 5.4 ms, p99 65.8 ms, max 270 ms |
+| Result | **6,000 requests, all `200`, 0 errors** |
+| Latency | p50 6.9 ms, p99 25.3 ms, max 68 ms |
 
 The settings that make this work are the readiness probe, the `preStop` sleep,
 the drain-on-`SIGTERM` behavior and the grace period; see
-[Kubernetes](#kubernetes). It is one run on a single-node kind cluster on a
-laptop, so treat it as evidence the mechanism works, not as a capacity claim.
+[Kubernetes](#kubernetes). It is one run on a single-node kind cluster (server
+Kubernetes v1.37.0) on the same laptop as the benchmark, so treat it as evidence
+the mechanism works, not as a capacity claim.
 
 ## Limitations and what I would do next
 
