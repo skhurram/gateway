@@ -24,14 +24,17 @@ type route struct {
 	prefix    string
 	handler   http.Handler
 	upstreams []*balancer.Upstream
+	limiter   *ratelimit.Limiter // nil without a rate limit
+	limit     config.RateLimit
 }
 
 // Router dispatches requests to the route with the longest matching path
 // prefix and responds 404 when none match.
 type Router struct {
-	routes    []route // sorted by prefix length, longest first
-	upstreams []*balancer.Upstream
-	metrics   *metrics
+	routes     []route // sorted by prefix length, longest first
+	upstreams  []*balancer.Upstream
+	metrics    *metrics
+	breakerCfg breaker.Config
 }
 
 // RouterOption configures NewRouter.
@@ -40,6 +43,18 @@ type RouterOption func(*routerConfig)
 type routerConfig struct {
 	meterProvider metric.MeterProvider
 	breakerNow    func() time.Time
+	previous      *Router
+}
+
+// WithPrevious carries per-upstream and per-route state over from the router
+// being replaced by a config reload, where its configuration is unchanged:
+//   - an upstream's circuit breaker and health status, when the route prefix,
+//     the upstream URL and the circuit breaker settings are the same;
+//   - a route's rate-limit buckets, when the prefix and the limits are the same.
+//
+// Anything whose configuration changed starts fresh.
+func WithPrevious(prev *Router) RouterOption {
+	return func(c *routerConfig) { c.previous = prev }
 }
 
 // WithMeterProvider sets where request metrics are recorded. The default is
@@ -68,10 +83,16 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper, opts ...RouterOption) (
 		return nil, err
 	}
 
-	r := &Router{metrics: m}
-	breakerCfg := cfg.EffectiveCircuitBreaker()
+	effective := cfg.EffectiveCircuitBreaker()
+	r := &Router{metrics: m, breakerCfg: breaker.Config{
+		FailureThreshold: effective.FailureThreshold,
+		OpenTimeout:      effective.OpenTimeout,
+		HalfOpenRequests: effective.HalfOpenRequests,
+	}}
 	for _, rcfg := range cfg.Routes {
 		prefix := config.NormalizePrefix(rcfg.Prefix)
+		prevRoute := rc.previous.route(prefix)
+		claimed := make(map[*balancer.Upstream]bool) // an old upstream carries over once
 		ups := make([]*balancer.Upstream, 0, len(rcfg.Upstreams))
 		for _, raw := range rcfg.Upstreams {
 			u, err := url.Parse(raw)
@@ -79,25 +100,34 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper, opts ...RouterOption) (
 				return nil, fmt.Errorf("route %q: %w", prefix, err)
 			}
 			up := balancer.NewUpstream(u)
-			cb, err := breaker.New(breaker.Config{
-				FailureThreshold: breakerCfg.FailureThreshold,
-				OpenTimeout:      breakerCfg.OpenTimeout,
-				HalfOpenRequests: breakerCfg.HalfOpenRequests,
-			}, rc.breakerNow)
-			if err != nil {
-				return nil, fmt.Errorf("route %q: create circuit breaker: %w", prefix, err)
+			if old := prevRoute.upstream(u.String(), claimed); old != nil && rc.previous.breakerCfg == r.breakerCfg {
+				claimed[old] = true
+				up.SetBreaker(old.Breaker())
+				up.SetHealthy(old.Healthy())
+			} else {
+				cb, err := breaker.New(r.breakerCfg, rc.breakerNow)
+				if err != nil {
+					return nil, fmt.Errorf("route %q: create circuit breaker: %w", prefix, err)
+				}
+				up.SetBreaker(cb)
 			}
-			up.SetBreaker(cb)
 			ups = append(ups, up)
 		}
 		h := NewBalanced(balancer.NewRoundRobin(ups), rt)
+		rte := route{prefix: prefix, upstreams: ups}
 		if rl := rcfg.RateLimit; rl != nil {
-			limiter := ratelimit.New(rl.RequestsPerSecond, rl.Burst, nil)
-			h = ratelimit.Middleware(limiter, ratelimit.WithOnLimited(func(req *http.Request) {
+			rte.limit = *rl
+			if prevRoute != nil && prevRoute.limiter != nil && prevRoute.limit == *rl {
+				rte.limiter = prevRoute.limiter
+			} else {
+				rte.limiter = ratelimit.New(rl.RequestsPerSecond, rl.Burst, nil)
+			}
+			h = ratelimit.Middleware(rte.limiter, ratelimit.WithOnLimited(func(req *http.Request) {
 				m.rateLimited(req.Context(), prefix)
 			}))(h)
 		}
-		r.routes = append(r.routes, route{prefix: prefix, handler: m.instrument(prefix, h), upstreams: ups})
+		rte.handler = m.instrument(prefix, h)
+		r.routes = append(r.routes, rte)
 		r.upstreams = append(r.upstreams, ups...)
 	}
 	sort.SliceStable(r.routes, func(i, j int) bool {
@@ -105,6 +135,33 @@ func NewRouter(cfg *config.Config, rt http.RoundTripper, opts ...RouterOption) (
 	})
 
 	return r, nil
+}
+
+// route returns the route with prefix, or nil. It is nil-safe on r.
+func (r *Router) route(prefix string) *route {
+	if r == nil {
+		return nil
+	}
+	for i := range r.routes {
+		if r.routes[i].prefix == prefix {
+			return &r.routes[i]
+		}
+	}
+	return nil
+}
+
+// upstream returns the route's first upstream with the given URL that is not
+// in claimed, or nil. It is nil-safe on rte.
+func (rte *route) upstream(rawURL string, claimed map[*balancer.Upstream]bool) *balancer.Upstream {
+	if rte == nil {
+		return nil
+	}
+	for _, u := range rte.upstreams {
+		if u.URL.String() == rawURL && !claimed[u] {
+			return u
+		}
+	}
+	return nil
 }
 
 // ObserveHealthy records the healthy upstream count for each route.
