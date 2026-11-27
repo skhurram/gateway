@@ -66,6 +66,9 @@ func (u *Upstream) Release() {
 	}
 }
 
+// Breaker returns the upstream's circuit breaker, or nil.
+func (u *Upstream) Breaker() *breaker.Breaker { return u.breaker }
+
 // BreakerState returns the upstream's passive circuit state.
 func (u *Upstream) BreakerState() breaker.State {
 	if u.breaker == nil {

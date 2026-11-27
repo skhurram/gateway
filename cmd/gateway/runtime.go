@@ -35,7 +35,7 @@ func newRuntimeManager(ctx context.Context, transport http.RoundTripper) *runtim
 }
 
 func (m *runtimeManager) initialize(cfg *config.Config) error {
-	next, err := m.build(cfg)
+	next, err := m.build(cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func (m *runtimeManager) reload(path string) error {
 			current.config.Listen, cfg.Listen)
 	}
 
-	next, err := m.build(cfg)
+	next, err := m.build(cfg, current.router)
 	if err != nil {
 		return err
 	}
@@ -71,8 +71,11 @@ func (m *runtimeManager) reload(path string) error {
 	return nil
 }
 
-func (m *runtimeManager) build(cfg *config.Config) (*liveRuntime, error) {
-	router, err := proxy.NewRouter(cfg, m.transport)
+// build creates a runtime for cfg. On reload, prev is the router being
+// replaced; breaker, health and rate-limit state carry over where their
+// configuration is unchanged (see proxy.WithPrevious).
+func (m *runtimeManager) build(cfg *config.Config, prev *proxy.Router) (*liveRuntime, error) {
+	router, err := proxy.NewRouter(cfg, m.transport, proxy.WithPrevious(prev))
 	if err != nil {
 		return nil, fmt.Errorf("router: %w", err)
 	}

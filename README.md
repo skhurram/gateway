@@ -139,8 +139,12 @@ gateway with:
   [decision 002](docs/decisions/002-health-checks.md).
 - **Circuit breaking.** Each upstream has an independent breaker. Request
   failures open the circuit before the next active health probe, and a bounded
-  half-open trial set tests recovery. Breakers reset when the gateway runtime
-  is reloaded. See [decision 004](docs/decisions/004-circuit-breaker.md).
+  half-open trial set tests recovery. A config reload keeps an upstream's
+  breaker when the route, the upstream URL and the breaker settings are
+  unchanged, and keeps a route's rate-limit buckets when its limits are
+  unchanged. Anything whose configuration changed starts fresh, as does
+  everything on a pod restart. See
+  [decision 004](docs/decisions/004-circuit-breaker.md).
 - **Config.** The chart renders `values.yaml` key `config` into a ConfigMap. A
   checksum annotation rolls the pods for Helm-rendered config changes. With the
   controller enabled, the pods mount the controller's `<name>-merged`
