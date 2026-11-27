@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gateway/internal/balancer"
@@ -20,19 +21,24 @@ type Checker struct {
 	Interval  time.Duration
 	Timeout   time.Duration
 	Client    *http.Client // optional; defaults to a client using Timeout
+
+	// checked is set by CheckOnce, so Run can skip its immediate first probe.
+	checked atomic.Bool
 }
 
 // Run probes all upstreams until ctx is cancelled, then waits for every
-// probe goroutine to exit before returning.
+// probe goroutine to exit before returning. The first probe runs immediately,
+// unless CheckOnce has already probed, in which case it waits one Interval.
 func (c *Checker) Run(ctx context.Context) {
 	client := c.httpClient()
+	probeNow := !c.checked.Load()
 
 	var wg sync.WaitGroup
 	for _, u := range c.Upstreams {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.loop(ctx, client, u)
+			c.loop(ctx, client, u, probeNow)
 		}()
 	}
 	wg.Wait()
@@ -53,6 +59,7 @@ func (c *Checker) CheckOnce(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+	c.checked.Store(true)
 }
 
 func (c *Checker) httpClient() *http.Client {
@@ -62,11 +69,14 @@ func (c *Checker) httpClient() *http.Client {
 	return &http.Client{Timeout: c.Timeout}
 }
 
-func (c *Checker) loop(ctx context.Context, client *http.Client, u *balancer.Upstream) {
+func (c *Checker) loop(ctx context.Context, client *http.Client, u *balancer.Upstream, probeNow bool) {
 	t := time.NewTicker(c.Interval)
 	defer t.Stop()
 	for {
-		c.probe(ctx, client, u)
+		if probeNow {
+			c.probe(ctx, client, u)
+		}
+		probeNow = true
 		select {
 		case <-ctx.Done():
 			return
