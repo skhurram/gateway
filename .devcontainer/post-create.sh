@@ -15,7 +15,7 @@ go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
 
 echo "==> Installing golangci-lint (same version as CI)"
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.15.0/install.sh \
   | sh -s -- -b "${GOBIN}" v2.15.0
 
 echo "==> Installing kubebuilder"
