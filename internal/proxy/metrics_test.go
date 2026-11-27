@@ -10,8 +10,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"gateway/internal/config"
 	"gateway/internal/proxy"
+	"gateway/pkg/config"
 )
 
 func twoUpstreamConfig(t *testing.T) *config.Config {

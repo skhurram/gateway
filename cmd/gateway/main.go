@@ -14,9 +14,9 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"gateway/internal/config"
 	"gateway/internal/proxy"
 	"gateway/internal/telemetry"
+	"gateway/pkg/config"
 )
 
 const (

@@ -98,11 +98,9 @@ func TestRenderGolden(t *testing.T) {
 
 func route(name, prefix string, created metav1.Time) gatewayv1alpha1.Route {
 	return gatewayv1alpha1.Route{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              name,
-			Namespace:         "default",
-			CreationTimestamp: created,
-		},
+		Name:              name,
+		Namespace:         "default",
+		CreationTimestamp: created,
 		Spec: gatewayv1alpha1.RouteSpec{
 			Prefix:    prefix,
 			Upstreams: []string{"http://upstream-" + name + ":8080"},

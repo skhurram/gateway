@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	gatewayv1alpha1 "gateway/controller/api/v1alpha1"
+	gatewayconfig "gateway/pkg/config"
 )
 
 const (
@@ -76,40 +77,100 @@ func (r *RouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.List(ctx, &routeList, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list routes: %w", err)
 	}
-	var (
-		rendered  []byte
-		conflicts []Conflict
-		owner     *corev1.ConfigMap
-		err       error
-	)
-	if r.BaseConfigMapName == "" {
-		rendered, conflicts, err = Render(routeList.Items, r.RenderOptions)
-	} else {
+	var owner *corev1.ConfigMap
+	if r.BaseConfigMapName != "" {
+		var err error
 		owner, err = r.getBase(ctx, req.Namespace)
-		if owner == nil && err == nil {
+		if err != nil {
+			r.recordRenderErrors(&routeList, err)
+			return ctrl.Result{}, err
+		}
+		if owner == nil {
 			// No base here yet (first install, or a namespace without a
 			// gateway). The base watch reconciles again once it exists.
 			logf.FromContext(ctx).Info("base ConfigMap not found; not writing gateway config",
 				"namespace", req.Namespace, "name", r.BaseConfigMapName)
 			return ctrl.Result{}, nil
 		}
-		if err == nil {
-			rendered, conflicts, err = Merge([]byte(owner.Data[r.configMapKey()]), routeList.Items,
-				req.Namespace+"/"+r.BaseConfigMapName)
-		}
 	}
+	build := func(routes []gatewayv1alpha1.Route) ([]byte, []Conflict, error) {
+		if owner == nil {
+			return Render(routes, r.RenderOptions)
+		}
+		return Merge([]byte(owner.Data[r.configMapKey()]), routes, req.Namespace+"/"+r.BaseConfigMapName)
+	}
+
+	rendered, conflicts, invalid, err := buildAccepted(routeList.Items, build)
 	if err != nil {
 		r.recordRenderErrors(&routeList, err)
+		if baseErr, ok := errors.AsType[*invalidBaseError](err); ok {
+			if statusErr := r.updateStatuses(ctx, routeList.Items, nil, nil, baseErr); statusErr != nil {
+				err = errors.Join(err, fmt.Errorf("update route status: %w", statusErr))
+			}
+		}
 		return ctrl.Result{}, err
 	}
 	if err := r.writeConfigMap(ctx, req.Namespace, rendered, owner); err != nil {
 		r.recordRenderErrors(&routeList, err)
 		return ctrl.Result{}, err
 	}
-	if err := r.updateStatuses(ctx, routeList.Items, conflicts); err != nil {
+	if err := r.updateStatuses(ctx, routeList.Items, conflicts, invalid, nil); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update route status: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// invalidBaseError means the gateway rejects the config even without any
+// Route, so the fault is in the base (or the render options), not a Route.
+type invalidBaseError struct{ err error }
+
+func (e *invalidBaseError) Error() string { return "gateway rejects the base config: " + e.err.Error() }
+func (e *invalidBaseError) Unwrap() error { return e.err }
+
+// buildAccepted builds the gateway config and checks it with the gateway's own
+// rules, so Ready means the gateway will load it. When the full config is
+// rejected, each Route is checked on its own on top of the base; the ones the
+// gateway rejects are left out and returned in invalid (Route key -> reason).
+func buildAccepted(
+	routes []gatewayv1alpha1.Route,
+	build func([]gatewayv1alpha1.Route) ([]byte, []Conflict, error),
+) ([]byte, []Conflict, map[string]string, error) {
+	rendered, conflicts, err := build(routes)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if _, err := gatewayconfig.Parse(rendered); err == nil {
+		return rendered, conflicts, nil, nil
+	}
+
+	empty, _, err := build(nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if _, err := gatewayconfig.Parse(empty); err != nil {
+		return nil, nil, nil, &invalidBaseError{err: err}
+	}
+	invalid := make(map[string]string)
+	accepted := make([]gatewayv1alpha1.Route, 0, len(routes))
+	for _, route := range routes {
+		single, _, err := build([]gatewayv1alpha1.Route{route})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if _, err := gatewayconfig.Parse(single); err != nil {
+			invalid[routeKey(route)] = err.Error()
+			continue
+		}
+		accepted = append(accepted, route)
+	}
+	rendered, conflicts, err = build(accepted)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if _, err := gatewayconfig.Parse(rendered); err != nil {
+		return nil, nil, nil, fmt.Errorf("gateway rejects the combined config: %w", err)
+	}
+	return rendered, conflicts, invalid, nil
 }
 
 // getBase returns the base ConfigMap, or nil without an error when it does
@@ -161,12 +222,10 @@ func (r *RouteReconciler) writeConfigMap(
 	switch {
 	case apierrors.IsNotFound(err):
 		cm = corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels:    map[string]string{"app.kubernetes.io/managed-by": "edge-gateway-controller"},
-			},
-			Data: map[string]string{key: string(rendered)},
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app.kubernetes.io/managed-by": "edge-gateway-controller"},
+			Data:      map[string]string{key: string(rendered)},
 		}
 		if owner != nil {
 			if err := controllerutil.SetOwnerReference(owner, &cm, r.Scheme); err != nil {
@@ -204,6 +263,8 @@ func (r *RouteReconciler) updateStatuses(
 	ctx context.Context,
 	routes []gatewayv1alpha1.Route,
 	conflicts []Conflict,
+	invalid map[string]string,
+	baseErr error,
 ) error {
 	conflictByRoute := make(map[string]Conflict, len(conflicts))
 	for _, conflict := range conflicts {
@@ -216,49 +277,58 @@ func (r *RouteReconciler) updateStatuses(
 		before.Conditions = append([]metav1.Condition(nil), route.Status.Conditions...)
 		route.Status.ObservedGeneration = route.Generation
 		key := routeKey(*route)
+		setCondition := func(conditionType string, status metav1.ConditionStatus, reason, message string) {
+			meta.SetStatusCondition(&route.Status.Conditions, metav1.Condition{
+				Type:               conditionType,
+				Status:             status,
+				ObservedGeneration: route.Generation,
+				Reason:             reason,
+				Message:            message,
+			})
+		}
 		conflict, conflicted := conflictByRoute[key]
-		if conflicted {
-			meta.SetStatusCondition(&route.Status.Conditions, metav1.Condition{
-				Type:               conflictCondition,
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: route.Generation,
-				Reason:             "PrefixConflict",
-				Message:            fmt.Sprintf("prefix %q is owned by %s", conflict.Prefix, conflict.Winner),
-			})
-			meta.SetStatusCondition(&route.Status.Conditions, metav1.Condition{
-				Type:               readyCondition,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: route.Generation,
-				Reason:             "PrefixConflict",
-				Message:            fmt.Sprintf("prefix %q conflicts with %s", conflict.Prefix, conflict.Winner),
-			})
-		} else {
-			meta.SetStatusCondition(&route.Status.Conditions, metav1.Condition{
-				Type:               conflictCondition,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: route.Generation,
-				Reason:             "UniquePrefix",
-				Message:            "route prefix is unique",
-			})
-			meta.SetStatusCondition(&route.Status.Conditions, metav1.Condition{
-				Type:               readyCondition,
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: route.Generation,
-				Reason:             "Rendered",
-				Message:            "route is present in the gateway configuration",
-			})
+		reason, isInvalid := invalid[key]
+		switch {
+		case baseErr != nil:
+			// Nothing was written, so no Route is live in an accepted config.
+			// The Conflict condition is left as it was.
+			setCondition(readyCondition, metav1.ConditionFalse, "InvalidBaseConfig", baseErr.Error())
+		case conflicted:
+			setCondition(conflictCondition, metav1.ConditionTrue, "PrefixConflict",
+				fmt.Sprintf("prefix %q is owned by %s", conflict.Prefix, conflict.Winner))
+			setCondition(readyCondition, metav1.ConditionFalse, "PrefixConflict",
+				fmt.Sprintf("prefix %q conflicts with %s", conflict.Prefix, conflict.Winner))
+		case isInvalid:
+			setCondition(conflictCondition, metav1.ConditionFalse, "UniquePrefix", "route prefix is unique")
+			setCondition(readyCondition, metav1.ConditionFalse, "InvalidConfig",
+				"the gateway rejects this route: "+reason)
+		default:
+			setCondition(conflictCondition, metav1.ConditionFalse, "UniquePrefix", "route prefix is unique")
+			setCondition(readyCondition, metav1.ConditionTrue, "Rendered",
+				"route is present in the gateway configuration")
 		}
 		if reflect.DeepEqual(before, route.Status) {
 			continue
 		}
 		wasConflict := meta.IsStatusConditionTrue(before.Conditions, conflictCondition)
+		wasReason := ""
+		if ready := meta.FindStatusCondition(before.Conditions, readyCondition); ready != nil {
+			wasReason = ready.Reason
+		}
 		if err := r.Status().Update(ctx, route); err != nil {
 			statusErrors = append(statusErrors, fmt.Errorf("%s: %w", key, err))
 			continue
 		}
-		if conflicted && !wasConflict && r.Recorder != nil {
+		if r.Recorder == nil {
+			continue
+		}
+		if conflicted && baseErr == nil && !wasConflict {
 			r.Recorder(route, corev1.EventTypeWarning, "RouteConflict",
 				"prefix %q is already owned by %s", conflict.Prefix, conflict.Winner)
+		}
+		if isInvalid && baseErr == nil && !conflicted && wasReason != "InvalidConfig" {
+			r.Recorder(route, corev1.EventTypeWarning, "RouteInvalid",
+				"the gateway rejects this route: %s", reason)
 		}
 	}
 	return errors.Join(statusErrors...)

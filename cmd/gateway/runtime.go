@@ -7,9 +7,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"gateway/internal/config"
 	"gateway/internal/health"
 	"gateway/internal/proxy"
+	"gateway/pkg/config"
 )
 
 type liveRuntime struct {

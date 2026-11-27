@@ -14,7 +14,8 @@ README's limitations section before claiming a feature works in production.
 
 ## Layout
 - `cmd/gateway` (main), `cmd/echo` (demo upstream).
-- `internal/{config,proxy,balancer,health,ratelimit,telemetry,breaker}`.
+- `pkg/config` (config parsing and validation; the controller module imports it).
+- `internal/{proxy,balancer,health,ratelimit,telemetry,breaker}`.
 - `deploy/helm/gateway` (chart), `deploy/kind`, `deploy/observability.yaml`, `scripts/`.
 - `docs/decisions/` holds short decision notes. Add one when a design choice has real alternatives.
 - `controller/` is a separate Go module for the `Route` controller.
@@ -32,7 +33,7 @@ README's limitations section before claiming a feature works in production.
 - The proxy forwards the full request path (no prefix stripping).
 - Run golangci-lint with a Go at least as new as `go.mod` (`go 1.27.1`).
 - When creating new `.go` files, check the first lines. Some editors insert a stray duplicate `package` line.
-- Hot reload must swap the router, the health checker and the metrics gauge callback together. See `internal/config` and `cmd/gateway/runtime.go`.
+- Hot reload must swap the router, the health checker and the metrics gauge callback together. See `pkg/config` and `cmd/gateway/runtime.go`.
 
 ## Working agreements
 - Do not push, tag, delete branches or clusters, or change repository visibility without asking.

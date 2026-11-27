@@ -1,0 +1,11 @@
+# Used for builds with -f controller/Dockerfile from the repository root.
+# Ignore everything by default and re-include only what the build needs: both
+# modules' manifests, the shared gateway config package, and controller source.
+**
+!go.mod
+!go.sum
+!pkg/**/*.go
+!controller/go.mod
+!controller/go.sum
+!controller/**/*.go
+**/*_test.go
