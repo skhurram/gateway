@@ -152,7 +152,10 @@ gateway with:
   ConfigMap without writing it, adds all Routes in the namespace, and writes
   one deterministic `<name>-merged` ConfigMap. Chart settings and routes are
   kept; a Route that claims a chart route's prefix gets a `Conflict`. A
-  `helm upgrade` triggers a re-merge. `Ready` and `Conflict` conditions show
+  `helm upgrade` triggers a re-merge. The controller checks the result with
+  the gateway's own config rules (`pkg/config`), so `Ready=True` means the
+  gateway accepts the Route. A Route the gateway would reject is left out and
+  reports `Ready=False` with the reason. `Ready` and `Conflict` conditions show
   which Routes are active. See
   [decision 003](docs/decisions/003-controller.md).
 - **Hardening.** Non-root user, read-only root filesystem, all capabilities

@@ -53,7 +53,7 @@ cluster:
 images:
 	docker build -t $(GATEWAY_IMG) .
 	docker build --build-arg CMD=echo -t $(ECHO_IMG) .
-	docker build -t $(CONTROLLER_IMG) controller
+	docker build -t $(CONTROLLER_IMG) -f controller/Dockerfile .
 	kind load docker-image $(GATEWAY_IMG) $(ECHO_IMG) $(CONTROLLER_IMG) --name $(CLUSTER)
 
 # The HPA needs metrics-server. kind uses self-signed kubelet certificates.

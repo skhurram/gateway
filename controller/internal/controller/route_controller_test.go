@@ -25,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -106,7 +105,7 @@ var _ = Describe("Route controller", func() {
 
 func routeObject(name, prefix string) *gatewayv1alpha1.Route {
 	return &gatewayv1alpha1.Route{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Name: name, Namespace: "default",
 		Spec: gatewayv1alpha1.RouteSpec{
 			Prefix:    prefix,
 			Upstreams: []string{"http://upstream-" + name + ":8080"},
@@ -116,7 +115,7 @@ func routeObject(name, prefix string) *gatewayv1alpha1.Route {
 
 func reconcileRoute(reconciler *RouteReconciler, namespace string) {
 	_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Namespace: namespace, Name: "route-event"},
+		Namespace: namespace, Name: "route-event",
 	})
 	Expect(err).NotTo(HaveOccurred())
 }

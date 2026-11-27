@@ -7,7 +7,6 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,7 +36,7 @@ var _ = Describe("Route controller with a base ConfigMap", func() {
 			Expect(client.IgnoreNotFound(k8sClient.Delete(bg, &routes.Items[i]))).To(Succeed())
 		}
 		for _, name := range []string{baseName, mergedName} {
-			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+			cm := &corev1.ConfigMap{Name: name, Namespace: namespace}
 			Expect(client.IgnoreNotFound(k8sClient.Delete(bg, cm))).To(Succeed())
 		}
 		reconciler = &RouteReconciler{
@@ -59,8 +58,8 @@ var _ = Describe("Route controller with a base ConfigMap", func() {
 			return
 		}
 		cm = corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: baseName, Namespace: namespace},
-			Data:       map[string]string{defaultConfigMapKey: body},
+			Name: baseName, Namespace: namespace,
+			Data: map[string]string{defaultConfigMapKey: body},
 		}
 		Expect(k8sClient.Create(bg, &cm)).To(Succeed())
 	}
@@ -138,7 +137,7 @@ var _ = Describe("Route controller with a base ConfigMap", func() {
 
 	It("maps only the base and merged ConfigMaps to reconcile requests", func() {
 		for name, want := range map[string]int{baseName: 1, mergedName: 1, "unrelated": 0} {
-			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+			cm := &corev1.ConfigMap{Name: name, Namespace: namespace}
 			Expect(reconciler.configMapRequests(context.Background(), cm)).To(HaveLen(want), name)
 		}
 	})
@@ -147,7 +146,7 @@ var _ = Describe("Route controller with a base ConfigMap", func() {
 // mergedRequest is a reconcile request for the namespace these specs use. The
 // controller reconciles a whole namespace, so the name is not significant.
 func mergedRequest() reconcile.Request {
-	return reconcile.Request{NamespacedName: types.NamespacedName{Namespace: mergeNamespace, Name: "route-event"}}
+	return reconcile.Request{Namespace: mergeNamespace, Name: "route-event"}
 }
 
 func reconcileMerged(reconciler *RouteReconciler) {

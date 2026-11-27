@@ -57,6 +57,13 @@ owner reference to the base, so uninstalling the chart removes it. Without a
 base, the controller writes nothing in that namespace. (An earlier version had
 both write the same key, which let each overwrite the other: issue #10.)
 
+Before writing, the controller checks the config with the gateway's own
+validation (`gateway/pkg/config`, imported from the parent module), so
+`Ready=True` means the gateway will load the Route. A Route the gateway would
+reject is left out of the config and reports `Ready=False`. The other Routes
+are still written. (Before this check, a Route with a bad upstream reported
+`Ready` while the gateway rejected the whole ConfigMap: issue #12.)
+
 Reconciliation always rebuilds the whole ConfigMap. Deleting a Route therefore
 requires no finalizer: the next reconciliation renders the remaining Routes
 and removes the deleted entry.

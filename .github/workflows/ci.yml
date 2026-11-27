@@ -110,4 +110,4 @@ jobs:
       - name: Build echo image
         run: docker build --build-arg CMD=echo -t edge-gateway-echo:ci .
       - name: Build controller image
-        run: docker build -t edge-gateway-controller:ci controller
+        run: docker build -t edge-gateway-controller:ci -f controller/Dockerfile .
